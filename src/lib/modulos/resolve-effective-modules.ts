@@ -1,4 +1,5 @@
 import { isErpRolSupervisor } from "@/lib/usuarios/erp-rol-normalize";
+import { isSingleClientMode } from "@/lib/instance/single-client";
 
 export type ModuloRow = { id: string; nombre: string; slug: string };
 
@@ -92,9 +93,16 @@ export async function resolveEffectiveModules(
     ),
   ];
 
-  /** Sin filas en empresa_modulos: misma UX que “ERP completo” (empresas nuevas / legado). */
+  /**
+   * Multi-tenant legado: sin filas en empresa_modulos → catálogo completo (UX “ERP completo”).
+   * Single-client: strict allowlist; sin filas → sin acceso. Evita reactivar módulos por aliases legacy
+   * o por flow de provisioning vacío.
+   */
   let effectiveEmpresaModuloIds = empresaModuloIds;
   if (effectiveEmpresaModuloIds.length === 0) {
+    if (isSingleClientMode()) {
+      return [];
+    }
     effectiveEmpresaModuloIds = await allModuloIdsFromCatalog(supabase);
   }
   if (effectiveEmpresaModuloIds.length === 0) return [];
@@ -120,8 +128,11 @@ export async function resolveEffectiveModules(
 
   let moduloIds: string[];
   if (userIds.length === 0) {
-    /** Retrocompat: sin usuario_modulos → todos los módulos habilitados para la empresa. */
-    moduloIds = effectiveEmpresaModuloIds;
+    /**
+     * Multi-tenant: sin usuario_modulos → todos los módulos habilitados para la empresa (retrocompat).
+     * Single-client: strict — sin usuario_modulos no se otorga nada. Forzar alta explícita por usuario.
+     */
+    moduloIds = isSingleClientMode() ? [] : effectiveEmpresaModuloIds;
   } else {
     const empresaSet = new Set(effectiveEmpresaModuloIds);
     moduloIds = userIds.filter((id) => empresaSet.has(id));

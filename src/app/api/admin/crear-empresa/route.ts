@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { AppSupabaseClient } from "@/lib/supabase/schema";
 import { supabaseServiceRoleClientOptions } from "@/lib/supabase/schema";
 import { ensureOmnicanalDashboardEmpresaModulos } from "@/lib/empresas/ensure-omnicanal-dashboard-empresa-modulos";
+import { isSingleClientMode, getSingleClientName } from "@/lib/instance/single-client";
 import { NextResponse } from "next/server";
 
 function mensajeErrorCrearUsuarioAuth(msg: string): string {
@@ -16,6 +17,17 @@ function mensajeErrorCrearUsuarioAuth(msg: string): string {
 }
 
 export async function POST(req: Request) {
+  if (isSingleClientMode()) {
+    return NextResponse.json(
+      {
+        error: "Creación de empresa deshabilitada: esta instancia opera en modo monocliente.",
+        code: "SINGLE_CLIENT_MODE",
+        client: getSingleClientName(),
+      },
+      { status: 403 },
+    );
+  }
+
   let authUserId: string | null = null;
   let empresaId: string | null = null;
 
