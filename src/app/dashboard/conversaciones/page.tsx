@@ -42,6 +42,7 @@ export default async function ConversacionesInboxPage() {
         initialOperationalPresence={initialOperationalPresence}
         initialCabeceraInsignia={initialCabeceraInsignia}
         initialOmnicanalRole={bootstrap?.omnicanal_role ?? null}
+        initialHasActiveFlows={bootstrap?.has_active_flows ?? false}
       />
     </Suspense>
   );

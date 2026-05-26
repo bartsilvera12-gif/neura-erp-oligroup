@@ -1333,6 +1333,13 @@ export type ConversacionesInboxBootstrap = {
    * (caso típico “Usuario Admin” en el menú).
    */
   cabecera_insignia: InboxCabeceraInsignia;
+  /**
+   * `true` si la empresa tiene al menos un flujo de chat activo. Resuelto server-side junto al
+   * resto del bootstrap para que la pestaña “Bot” pueda renderizarse desde el primer SSR sin
+   * depender de una server action client-side que puede fallar silenciosamente y dejar la
+   * pestaña oculta.
+   */
+  has_active_flows: boolean;
 };
 
 const USUARIO_ROL_ADMIN_ERP = new Set(["admin", "administrador", "super_admin", "owner"]);
@@ -1357,12 +1364,24 @@ export async function fetchOmnicanalUxSummary(): Promise<{
 
 export async function getConversacionesInboxBootstrap(): Promise<ConversacionesInboxBootstrap> {
   const { supabase, catalogSr, empresa_id, usuario_id, dataSchema } = await requireEmpresaTenantServiceRole();
-  const [presence, scope] = await Promise.all([
+  const [presence, scope, activeFlowsCheck] = await Promise.all([
     getMyAgentOperationalPresence(),
     getOmnicanalScope(supabase, empresa_id, usuario_id, {
       tenantDataSchema: dataSchema,
     }),
+    /**
+     * Conteo head=true: solo necesitamos saber si EXISTE al menos un flow activo.
+     * Mismo cliente que `hasEmpresaActiveChatFlows`, pero resuelto en el round-trip
+     * server-side de bootstrap para que la prop llegue al RSC sin race condition.
+     * Supabase entrega errores en `.error` (no throws), por eso no requiere try/catch.
+     */
+    supabase
+      .from("chat_flows")
+      .select("id", { count: "exact", head: true })
+      .eq("empresa_id", empresa_id)
+      .eq("activo", true),
   ]);
+  const has_active_flows = !activeFlowsCheck.error && (activeFlowsCheck.count ?? 0) > 0;
 
   let cabecera_insignia: InboxCabeceraInsignia = null;
   if (!presence.in_queues) {
@@ -1388,7 +1407,7 @@ export async function getConversacionesInboxBootstrap(): Promise<ConversacionesI
     }
   }
 
-  return { presence, omnicanal_role: scope.role, cabecera_insignia };
+  return { presence, omnicanal_role: scope.role, cabecera_insignia, has_active_flows };
 }
 
 export type SetMyAgentOperationalPresenceResult = { applied: boolean; reason?: string };

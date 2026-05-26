@@ -328,6 +328,7 @@ export function ConversacionesClient({
   initialOperationalPresence,
   initialCabeceraInsignia = null,
   initialOmnicanalRole = null,
+  initialHasActiveFlows = false,
 }: {
   mode: ConversacionesClientMode;
   /** Esquema Postgres de tablas chat_* (zentra_erp o `er_…`). */
@@ -340,6 +341,12 @@ export function ConversacionesClient({
   initialCabeceraInsignia?: InboxCabeceraInsignia;
   /** Rol operativo omnicanal (precargado para mensajes UX de alcance). */
   initialOmnicanalRole?: OmnicanalOperatorRole | null;
+  /**
+   * `true` si el bootstrap server-side detectó que la empresa tiene al menos un flujo activo.
+   * Garantiza que la pestaña Bot se muestre desde el primer render sin depender de la server
+   * action `hasEmpresaActiveChatFlows` (que puede fallar silenciosamente y dejar la pestaña oculta).
+   */
+  initialHasActiveFlows?: boolean;
 }) {
   const supabaseChat = useMemo(
     () => createBrowserClientForSchema(chatDataSchema),
@@ -401,8 +408,8 @@ export function ConversacionesClient({
   const [quickReplyOpen, setQuickReplyOpen] = useState(false);
   const [quickReplySearch, setQuickReplySearch] = useState("");
   const quickReplyPanelRef = useRef<HTMLDivElement | null>(null);
-  const [hasActiveBotFlows, setHasActiveBotFlows] = useState(false);
-  const [botFlowsChecked, setBotFlowsChecked] = useState(false);
+  const [hasActiveBotFlows, setHasActiveBotFlows] = useState(initialHasActiveFlows);
+  const [botFlowsChecked, setBotFlowsChecked] = useState(initialHasActiveFlows);
   const [compValidacionesOpen, setCompValidacionesOpen] = useState(false);
   const [listColumnHidden, setListColumnHidden] = useState(false);
   /**
@@ -900,10 +907,17 @@ export function ConversacionesClient({
       setBotFlowsChecked(true);
       return;
     }
-    void hasEmpresaActiveChatFlows().then((v) => {
-      setHasActiveBotFlows(v);
-      setBotFlowsChecked(true);
-    });
+    void hasEmpresaActiveChatFlows()
+      .then((v) => {
+        setHasActiveBotFlows(v);
+        setBotFlowsChecked(true);
+      })
+      .catch((e) => {
+        // No bloquear UI si la server action falla; el bootstrap server-side
+        // ya pobló `initialHasActiveFlows` con la respuesta correcta.
+        console.error("[ConversacionesClient] hasEmpresaActiveChatFlows failed", e);
+        setBotFlowsChecked(true);
+      });
   }, [mode]);
 
   useEffect(() => {
