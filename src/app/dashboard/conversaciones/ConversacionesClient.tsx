@@ -875,12 +875,16 @@ export function ConversacionesClient({
   function setVista(next: ConversacionesVista) {
     if (mode === "historial") {
       if (next === "inbox") router.push("/dashboard/conversaciones");
-      if (next === "bot" && hasActiveBotFlows) router.push("/dashboard/conversaciones?vista=bot");
+      // `hasActiveBotFlows` controla el RENDER del botón Bot (línea ~2192). Si el botón es
+      // clickeable, el handler ya pasó esa puerta — no re-validar acá, porque la server
+      // action `hasEmpresaActiveChatFlows()` puede correr en background y devolver `false`
+      // por race condition, dejando el navigation muerto sin pista visual.
+      if (next === "bot") router.push("/dashboard/conversaciones?vista=bot");
       return;
     }
     const params = new URLSearchParams(searchParams?.toString() ?? "");
     if (next === "inbox") params.delete("vista");
-    else if (next === "bot" && hasActiveBotFlows) params.set("vista", "bot");
+    else if (next === "bot") params.set("vista", "bot");
     else if (next === "historial") {
       router.push("/dashboard/historial-omnicanal");
       return;
