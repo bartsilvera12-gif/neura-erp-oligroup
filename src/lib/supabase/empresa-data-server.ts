@@ -1,9 +1,17 @@
 import { resolveApiAuthContext } from "@/lib/middleware/api-auth-context";
 import { createSupabaseServerClient, createSupabaseServerClientWithDbSchema } from "@/lib/supabase/server";
 import { SUPABASE_APP_SCHEMA, resolveEmpresaDataSchema } from "@/lib/supabase/schema";
+import { getSingleClientSchemaOrNull } from "@/lib/instance/single-client";
 
 /** PostgREST schema de datos ERP (`empresas.data_schema` o plantilla legada). */
 export async function resolveDataSchemaForCurrentUserServer(): Promise<string> {
+  // En instancia single_client el schema operativo es fijo (NEURA_CLIENT_SCHEMA).
+  // No hace falta consultar `empresas.data_schema` — el catálogo puede tener un
+  // valor heredado del dump origen (p.ej. `erp_*_<empresa_uuid>`) que en self-hosted
+  // no existe como schema, y dispararía queries a un schema fantasma.
+  const singleClient = getSingleClientSchemaOrNull();
+  if (singleClient) return singleClient;
+
   const catalog = await createSupabaseServerClient();
   const {
     data: { user },
