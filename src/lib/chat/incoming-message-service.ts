@@ -12,10 +12,9 @@ import { markCampaignReplyFromInbound } from "@/lib/campaigns/campaign-inbound-h
 import { executeCampaignButtonActionForMatchedRecipient } from "@/lib/campaigns/campaign-button-action-service";
 import type { SupabaseAdmin } from "@/lib/chat/types";
 import { normalizeWaPhone } from "@/lib/chat/wa-phone";
-import { getChatPostgresPool } from "@/lib/supabase/chat-pg-pool";
+import { getChatPostgresPool, quoteSchemaTable } from "@/lib/supabase/chat-pg-pool";
 import { fetchDataSchemaForEmpresaId } from "@/lib/supabase/empresa-data-schema";
-import { createServiceRoleClient } from "@/lib/supabase/service-admin";
-import { isSingleClientMode } from "@/lib/instance/single-client";
+import { getSingleClientSchemaOrNull, isSingleClientMode } from "@/lib/instance/single-client";
 
 export const CHAT_CHANNEL_TYPES = ["whatsapp", "instagram", "facebook", "email", "linkedin"] as const;
 export type ChatChannelType = (typeof CHAT_CHANNEL_TYPES)[number];
@@ -125,10 +124,25 @@ export type PersistInboundChatMessageResult =
 /**
  * Inserta fila en `chat_messages` y actualiza preview / unread / estado de flujo en `chat_conversations`.
  * Usado por el webhook WhatsApp tras toda la lógica de flujo (reinicios, handoff, etc.).
+ *
+ * En single_client el INSERT vía PostgREST falla silenciosamente por RLS
+ * (`chat_messages_insert WITH CHECK puede_acceder_empresa(empresa_id)` retorna false
+ * sin JWT de usuario). Forzamos rama PG directa contra `NEURA_CLIENT_SCHEMA` usando
+ * el mismo pool que ya usan los outbounds del flow-engine — bypass total de
+ * PostgREST/RLS, mismo path probado y operativo.
+ *
+ * En multi_tenant legacy se mantiene el path Supabase REST original.
  */
 export async function persistInboundChatMessageAndBump(
   input: PersistInboundChatMessageInput
 ): Promise<PersistInboundChatMessageResult> {
+  // Rama single_client → PG directo, evita RLS PostgREST.
+  if (isSingleClientMode()) {
+    const pgResult = await persistInboundViaPg(input);
+    if (pgResult) return pgResult;
+    // Si pool o schema no resuelven, caemos al path Supabase REST como último recurso.
+  }
+
   const {
     supabase,
     empresaId,
@@ -144,20 +158,7 @@ export async function persistInboundChatMessageAndBump(
     conversationState,
   } = input;
 
-  /**
-   * Webhook Meta NO tiene sesión de usuario; el cliente que llega acá vía PostgREST
-   * queda sometido a las policies RLS de `chat_messages` (`puede_acceder_empresa(empresa_id)`)
-   * que retornan false sin JWT, bloqueando el INSERT silenciosamente.
-   *
-   * En single_client forzamos service_role para garantizar bypass de RLS en las
-   * escrituras del inbound. En multi_tenant legacy se mantiene el cliente recibido
-   * por parámetro (el wiring multi-tenant ya provee service_role o cliente apto).
-   */
-  const writeClient: SupabaseAdmin = isSingleClientMode()
-    ? (createServiceRoleClient() as SupabaseAdmin)
-    : supabase;
-
-  const { data: insertedMsg, error: insErr } = await writeClient
+  const { data: insertedMsg, error: insErr } = await supabase
     .from("chat_messages")
     .insert({
       empresa_id: empresaId,
@@ -188,7 +189,7 @@ export async function persistInboundChatMessageAndBump(
   const bumpUnread =
     !fromMe && String(senderType || "contact").toLowerCase() === "contact";
 
-  const { data: prevConv } = await writeClient
+  const { data: prevConv } = await supabase
     .from("chat_conversations")
     .select("flow_code, flow_current_node")
     .eq("id", conversationId)
@@ -219,7 +220,7 @@ export async function persistInboundChatMessageAndBump(
     console.warn("[bot-routing]", "persist_guard_kept_flow_node_from_db", { conversationId });
   }
 
-  await writeClient
+  await supabase
     .from("chat_conversations")
     .update({
       flow_code: nextFlowCode,
@@ -235,7 +236,159 @@ export async function persistInboundChatMessageAndBump(
     .eq("id", conversationId)
     .eq("empresa_id", empresaId);
 
-  await markFirstHumanOperatorReply(writeClient, empresaId, conversationId, {
+  await markFirstHumanOperatorReply(supabase, empresaId, conversationId, {
+    from_me: fromMe,
+    sender_type: senderType,
+  });
+
+  return { ok: true, message_id: messageId };
+}
+
+/**
+ * Persistencia inbound vía PG directo (single_client) — bypass total de PostgREST/RLS.
+ * Retorna `null` si pool/schema no resuelven (caller cae al path Supabase REST legacy).
+ *
+ * Replica el mismo INSERT + persist_guard + UPDATE chat_conversations + markFirstHumanOperatorReply
+ * pero con SQL parametrizado vía pg.Pool. Maneja unique violation (23505) idénticamente al path REST.
+ */
+async function persistInboundViaPg(
+  input: PersistInboundChatMessageInput
+): Promise<PersistInboundChatMessageResult | null> {
+  const pool = getChatPostgresPool();
+  const schema = getSingleClientSchemaOrNull();
+  if (!pool || !schema) return null;
+
+  const {
+    supabase,
+    empresaId,
+    conversationId,
+    externalMessageId,
+    messageType,
+    content,
+    rawPayload,
+    timestampIso,
+    preview,
+    fromMe = false,
+    senderType = "contact",
+    conversationState,
+  } = input;
+
+  const msgT = quoteSchemaTable(schema, "chat_messages");
+  const convT = quoteSchemaTable(schema, "chat_conversations");
+  const rawJson = JSON.stringify(rawPayload ?? {});
+
+  // INSERT inbound
+  let messageId: string;
+  try {
+    const ins = await pool.query<{ id: string }>(
+      `INSERT INTO ${msgT} (
+         empresa_id, conversation_id, wa_message_id, from_me,
+         sender_type, message_type, content, raw_payload
+       ) VALUES (
+         $1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::jsonb
+       )
+       RETURNING id::text AS id`,
+      [empresaId, conversationId, externalMessageId, fromMe, senderType, messageType, content, rawJson]
+    );
+    const row = ins.rows?.[0];
+    if (!row?.id) {
+      return { ok: false, error: "Insert mensaje sin id (pg)" };
+    }
+    messageId = row.id;
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    if (err?.code === "23505") {
+      return { ok: false, error: err.message ?? "duplicate", duplicate: true };
+    }
+    console.error("[persistInboundViaPg] insert chat_messages failed", {
+      code: err?.code,
+      message: err?.message,
+      conversationId,
+      wa_mid: externalMessageId,
+    });
+    return { ok: false, error: err?.message ?? String(e) };
+  }
+
+  // SELECT prev conv (guard de flow_code / flow_current_node)
+  const prevRowQ = await pool.query<{
+    flow_code: string | null;
+    flow_current_node: string | null;
+  }>(
+    `SELECT flow_code, flow_current_node
+       FROM ${convT}
+      WHERE id=$1::uuid AND empresa_id=$2::uuid
+      LIMIT 1`,
+    [conversationId, empresaId]
+  );
+  const prevRow = prevRowQ.rows?.[0] ?? null;
+
+  let nextFlowCode: string | null = conversationState.flow_code ?? null;
+  let nextFlowNode: string | null = conversationState.flow_current_node ?? null;
+  const flowStatus = conversationState.flow_status ?? "bot";
+  const humanTaken = conversationState.human_taken_over ?? false;
+  if (
+    nextFlowCode === null &&
+    typeof prevRow?.flow_code === "string" &&
+    prevRow.flow_code.trim() !== "" &&
+    !humanTaken &&
+    String(flowStatus).trim() !== "human"
+  ) {
+    nextFlowCode = prevRow.flow_code;
+    console.warn("[bot-routing]", "persist_guard_kept_flow_code_from_db", { conversationId });
+  }
+  if (
+    nextFlowNode === null &&
+    typeof prevRow?.flow_current_node === "string" &&
+    prevRow.flow_current_node.trim() !== "" &&
+    !humanTaken &&
+    String(flowStatus).trim() !== "human"
+  ) {
+    nextFlowNode = prevRow.flow_current_node;
+    console.warn("[bot-routing]", "persist_guard_kept_flow_node_from_db", { conversationId });
+  }
+
+  const prevStatus = conversationState.status ?? "open";
+  const nextStatus = prevStatus === "closed" ? "pending" : prevStatus;
+  const bumpUnread =
+    !fromMe && String(senderType || "contact").toLowerCase() === "contact";
+
+  // UPDATE conversation bump (preview, last_message_at, unread, flow_*)
+  try {
+    await pool.query(
+      `UPDATE ${convT} SET
+         flow_code = $1,
+         flow_current_node = $2,
+         flow_status = $3,
+         human_taken_over = $4,
+         last_message_at = $5::timestamptz,
+         last_message_preview = $6,
+         unread_count = $7,
+         status = $8,
+         updated_at = now()
+       WHERE id=$9::uuid AND empresa_id=$10::uuid`,
+      [
+        nextFlowCode,
+        nextFlowNode,
+        flowStatus,
+        humanTaken,
+        timestampIso,
+        preview,
+        conversationState.unread_count + (bumpUnread ? 1 : 0),
+        nextStatus,
+        conversationId,
+        empresaId,
+      ]
+    );
+  } catch (e) {
+    console.error("[persistInboundViaPg] update chat_conversations failed", {
+      message: (e as { message?: string }).message,
+      conversationId,
+    });
+    // El INSERT del mensaje ya está hecho — devolvemos ok para no romper el handler.
+  }
+
+  // SLA marker — mantiene comportamiento con cliente REST (no es write crítico)
+  await markFirstHumanOperatorReply(supabase, empresaId, conversationId, {
     from_me: fromMe,
     sender_type: senderType,
   });
