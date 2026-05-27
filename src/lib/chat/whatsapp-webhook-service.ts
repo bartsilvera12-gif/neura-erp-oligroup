@@ -4,7 +4,8 @@ import {
 } from "@/lib/chat/channel-provision";
 import { createFlowEngine } from "@/lib/chat/flow-engine-service";
 import { flowTrace } from "@/lib/chat/flow-trace-log";
-import { persistInboundChatMessageAndBump } from "@/lib/chat/incoming-message-service";
+import { persistInboundChatMessageAndBump, persistInboundEarlyViaPg } from "@/lib/chat/incoming-message-service";
+import { isSingleClientMode } from "@/lib/instance/single-client";
 import { assignConversation } from "@/lib/chat/assign-conversation-service";
 import { assignConversationPg } from "@/lib/chat/webhooks/assign-conversation-pg";
 import { createTenantPgChatSupabaseShim } from "@/lib/chat/tenant-pg-chat-supabase-shim";
@@ -808,6 +809,62 @@ export async function processInboundWebhookValue(
         empresaId,
         conversationId,
       });
+
+      /**
+       * Early-persist (single_client): guardar el inbound INMEDIATAMENTE, antes de
+       * restart-intent / CRM / ensure_session / flow-engine. Garantiza que el
+       * mensaje del usuario quede en `chat_messages` aunque cualquier paso posterior
+       * tire excepción capturada por el try/catch externo del loop.
+       *
+       * Idempotente vía `ON CONFLICT (wa_message_id) DO NOTHING`. Si Meta reintenta o
+       * si el `persistInboundChatMessageAndBump` posterior intenta insertar de nuevo,
+       * el `messageExists` upstream o el 23505 internal manejan duplicate sin doble bump.
+       */
+      if (isSingleClientMode()) {
+        console.info("[webhook][early-inbound-persist][start]", {
+          conversationId,
+          wa_mid: waMid,
+        });
+        const earlyR = await persistInboundEarlyViaPg({
+          empresaId,
+          conversationId,
+          externalMessageId: waMid,
+          messageType: message_type,
+          content,
+          rawPayload: msg as unknown as Record<string, unknown>,
+          timestampIso: ts,
+          preview,
+          unreadCount:
+            (existingConv as { unread_count?: number }).unread_count ?? 0,
+        });
+        if (earlyR === null) {
+          console.warn("[webhook][early-inbound-persist][skipped]", {
+            reason: "no pool/schema",
+            conversationId,
+          });
+        } else if (!earlyR.ok) {
+          console.error("[webhook][early-inbound-persist][failed]", {
+            conversationId,
+            wa_mid: waMid,
+            error: earlyR.error,
+          });
+          errors.push(`Early inbound persist: ${earlyR.error}`);
+        } else if (earlyR.duplicate) {
+          console.info("[webhook][early-inbound-persist][duplicate]", {
+            conversationId,
+            wa_mid: waMid,
+            message_id: earlyR.message_id,
+          });
+          inboundMessageAlreadyPersisted = true;
+        } else {
+          console.info("[webhook][early-inbound-persist][ok]", {
+            conversationId,
+            wa_mid: waMid,
+            message_id: earlyR.message_id,
+          });
+          inboundMessageAlreadyPersisted = true;
+        }
+      }
 
       console.info(WH_FLOW, "sync_catalog_before", { conversationId });
       const syncedFlow = await syncWhatsappConversationFlowFromCatalog(supabase, empresaId, conversationId, {

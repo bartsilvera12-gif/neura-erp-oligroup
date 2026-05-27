@@ -121,6 +121,126 @@ export type PersistInboundChatMessageResult =
   | { ok: true; message_id: string }
   | { ok: false; error: string; duplicate?: boolean };
 
+/** Input para el persist temprano e idempotente del inbound (single_client). */
+export type PersistInboundEarlyInput = {
+  empresaId: string;
+  conversationId: string;
+  externalMessageId: string;
+  messageType: string;
+  content: string | null;
+  rawPayload: Record<string, unknown>;
+  timestampIso: string;
+  preview: string;
+  /** unread_count actual de la conversación, antes del bump. */
+  unreadCount: number;
+};
+
+export type PersistInboundEarlyResult =
+  | { ok: true; message_id: string; duplicate: false }
+  | { ok: true; message_id: string | null; duplicate: true }
+  | { ok: false; error: string };
+
+/**
+ * Persistencia "temprana" e idempotente del inbound vía PG directo (single_client).
+ *
+ * El handler webhook tiene un try/catch externo que captura excepciones a `errors[]`
+ * entre `restart-intent` y el `persistInboundChatMessageAndBump` regular. Si algún
+ * paso intermedio (ensure_session, CRM lead, assign, etc.) tira excepción, el persist
+ * "regular" nunca se ejecuta y el inbound queda sin registrar en chat_messages.
+ *
+ * Esta función se invoca **antes** del restart-intent y guarda el inbound +
+ * actualiza el bump de conversación de forma atómica y resistente a:
+ *  - reintentos de Meta (UNIQUE wa_message_id → `ON CONFLICT DO NOTHING`)
+ *  - excepciones del flujo posterior
+ *  - RLS PostgREST (bypass total con pg.Pool)
+ *
+ * Retorna `null` si el pool/schema no están disponibles (caller decide qué hacer).
+ *
+ * Convención de inbound:
+ *  - `from_me=false`, `sender_type='contact'`
+ *  - El bump de `unread_count` solo se aplica cuando NO es duplicate, para no
+ *    incrementar dos veces ante reintentos de Meta.
+ */
+export async function persistInboundEarlyViaPg(
+  input: PersistInboundEarlyInput
+): Promise<PersistInboundEarlyResult | null> {
+  const pool = getChatPostgresPool();
+  const schema = getSingleClientSchemaOrNull();
+  if (!pool || !schema) return null;
+
+  const msgT = quoteSchemaTable(schema, "chat_messages");
+  const convT = quoteSchemaTable(schema, "chat_conversations");
+  const rawJson = JSON.stringify(input.rawPayload ?? {});
+
+  let messageId: string | null = null;
+  let isDuplicate = false;
+
+  try {
+    const ins = await pool.query<{ id: string }>(
+      `INSERT INTO ${msgT} (
+         empresa_id, conversation_id, wa_message_id, from_me,
+         sender_type, message_type, content, raw_payload
+       ) VALUES (
+         $1::uuid, $2::uuid, $3, false, 'contact', $4, $5, $6::jsonb
+       )
+       ON CONFLICT (wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING
+       RETURNING id::text AS id`,
+      [
+        input.empresaId,
+        input.conversationId,
+        input.externalMessageId,
+        input.messageType,
+        input.content,
+        rawJson,
+      ]
+    );
+    if (ins.rowCount && ins.rowCount > 0 && ins.rows?.[0]?.id) {
+      messageId = ins.rows[0].id;
+    } else {
+      isDuplicate = true;
+      const exQ = await pool.query<{ id: string }>(
+        `SELECT id::text AS id FROM ${msgT} WHERE wa_message_id=$1 LIMIT 1`,
+        [input.externalMessageId]
+      );
+      messageId = exQ.rows?.[0]?.id ?? null;
+    }
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    return { ok: false, error: err?.message ?? String(e) };
+  }
+
+  if (!isDuplicate) {
+    try {
+      await pool.query(
+        `UPDATE ${convT} SET
+           last_message_at = $1::timestamptz,
+           last_message_preview = $2,
+           unread_count = $3,
+           status = CASE WHEN status='closed' THEN 'pending' ELSE status END,
+           updated_at = now()
+         WHERE id=$4::uuid AND empresa_id=$5::uuid`,
+        [
+          input.timestampIso,
+          input.preview,
+          input.unreadCount + 1,
+          input.conversationId,
+          input.empresaId,
+        ]
+      );
+    } catch (e) {
+      // El INSERT del mensaje ya está hecho — log warn y seguir.
+      console.warn("[webhook][early-inbound-persist][bump-failed]", {
+        conversationId: input.conversationId,
+        err: (e as { message?: string }).message,
+      });
+    }
+  }
+
+  return isDuplicate
+    ? { ok: true, message_id: messageId, duplicate: true }
+    : { ok: true, message_id: messageId as string, duplicate: false };
+}
+
 /**
  * Inserta fila en `chat_messages` y actualiza preview / unread / estado de flujo en `chat_conversations`.
  * Usado por el webhook WhatsApp tras toda la lógica de flujo (reinicios, handoff, etc.).
