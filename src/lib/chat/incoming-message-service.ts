@@ -14,6 +14,8 @@ import type { SupabaseAdmin } from "@/lib/chat/types";
 import { normalizeWaPhone } from "@/lib/chat/wa-phone";
 import { getChatPostgresPool } from "@/lib/supabase/chat-pg-pool";
 import { fetchDataSchemaForEmpresaId } from "@/lib/supabase/empresa-data-schema";
+import { createServiceRoleClient } from "@/lib/supabase/service-admin";
+import { isSingleClientMode } from "@/lib/instance/single-client";
 
 export const CHAT_CHANNEL_TYPES = ["whatsapp", "instagram", "facebook", "email", "linkedin"] as const;
 export type ChatChannelType = (typeof CHAT_CHANNEL_TYPES)[number];
@@ -142,7 +144,20 @@ export async function persistInboundChatMessageAndBump(
     conversationState,
   } = input;
 
-  const { data: insertedMsg, error: insErr } = await supabase
+  /**
+   * Webhook Meta NO tiene sesión de usuario; el cliente que llega acá vía PostgREST
+   * queda sometido a las policies RLS de `chat_messages` (`puede_acceder_empresa(empresa_id)`)
+   * que retornan false sin JWT, bloqueando el INSERT silenciosamente.
+   *
+   * En single_client forzamos service_role para garantizar bypass de RLS en las
+   * escrituras del inbound. En multi_tenant legacy se mantiene el cliente recibido
+   * por parámetro (el wiring multi-tenant ya provee service_role o cliente apto).
+   */
+  const writeClient: SupabaseAdmin = isSingleClientMode()
+    ? (createServiceRoleClient() as SupabaseAdmin)
+    : supabase;
+
+  const { data: insertedMsg, error: insErr } = await writeClient
     .from("chat_messages")
     .insert({
       empresa_id: empresaId,
@@ -173,7 +188,7 @@ export async function persistInboundChatMessageAndBump(
   const bumpUnread =
     !fromMe && String(senderType || "contact").toLowerCase() === "contact";
 
-  const { data: prevConv } = await supabase
+  const { data: prevConv } = await writeClient
     .from("chat_conversations")
     .select("flow_code, flow_current_node")
     .eq("id", conversationId)
@@ -204,7 +219,7 @@ export async function persistInboundChatMessageAndBump(
     console.warn("[bot-routing]", "persist_guard_kept_flow_node_from_db", { conversationId });
   }
 
-  await supabase
+  await writeClient
     .from("chat_conversations")
     .update({
       flow_code: nextFlowCode,
@@ -220,7 +235,7 @@ export async function persistInboundChatMessageAndBump(
     .eq("id", conversationId)
     .eq("empresa_id", empresaId);
 
-  await markFirstHumanOperatorReply(supabase, empresaId, conversationId, {
+  await markFirstHumanOperatorReply(writeClient, empresaId, conversationId, {
     from_me: fromMe,
     sender_type: senderType,
   });
