@@ -11,6 +11,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-admin";
 import { quoteSchemaTable } from "@/lib/supabase/chat-pg-pool";
 import { assertAllowedChatDataSchema } from "@/lib/supabase/chat-data-schema";
 import { SUPABASE_APP_SCHEMA } from "@/lib/supabase/schema";
+import { isSingleClientMode } from "@/lib/instance/single-client";
 
 const LOG = "[chat-channel][central_mirror]" as const;
 
@@ -202,6 +203,10 @@ export async function ensureCentralChatChannelMirror(opts: {
   empresaId: string;
   channelId: string;
 }): Promise<void> {
+  // single_client: catálogo y datos viven en el mismo NEURA_CLIENT_SCHEMA; el mirror central
+  // sería redundante e intentaría INSERT INTO zentra_erp.* que no existe en self-hosted.
+  if (isSingleClientMode()) return;
+
   let tenantSchema: string;
   try {
     tenantSchema = assertAllowedChatDataSchema(opts.tenantDataSchema.trim());

@@ -13,6 +13,7 @@ import { createServiceRoleClient } from "@/lib/supabase/service-admin";
 import { quoteSchemaTable } from "@/lib/supabase/chat-pg-pool";
 import { assertAllowedChatDataSchema } from "@/lib/supabase/chat-data-schema";
 import { SUPABASE_APP_SCHEMA } from "@/lib/supabase/schema";
+import { isSingleClientMode } from "@/lib/instance/single-client";
 
 const LOG = "[chat-flow-session][central_mirror]" as const;
 
@@ -159,6 +160,9 @@ export async function ensureCentralChatFlowSessionMirror(opts: {
   empresaId: string;
   sessionId: string;
 }): Promise<void> {
+  // single_client: mirror central no aplica (sin schema central, INSERT a zentra_erp falla).
+  if (isSingleClientMode()) return;
+
   const ds = await fetchDataSchemaForEmpresaId(opts.empresaId);
   let tenantSchema: string;
   try {

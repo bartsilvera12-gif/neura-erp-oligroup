@@ -4,6 +4,7 @@ import { createServiceRoleClientWithDbSchema } from "@/lib/supabase/empresa-data
 import { createServiceRoleClient } from "@/lib/supabase/service-admin";
 import { getChatPostgresPool } from "@/lib/supabase/chat-pg-pool";
 import { SUPABASE_APP_SCHEMA } from "@/lib/supabase/schema";
+import { isSingleClientMode } from "@/lib/instance/single-client";
 
 /** PostgREST con `db.schema=public`: los RPC omnicanal viven en `public`, no en `zentra_erp`. */
 function createPublicRpcClient(): SupabaseAdmin {
@@ -24,6 +25,11 @@ export async function fetchOmnichannelRouteByMetaPhone(
   catalog: SupabaseAdmin,
   phoneNumberId: string
 ): Promise<OmnichannelRouteRow | null> {
+  // single_client: routing implícito — el webhook resuelve el canal directamente desde
+  // NEURA_CLIENT_SCHEMA.chat_channels. Los RPC `public.neura_*` y la tabla
+  // `zentra_erp.omnichannel_routes` no existen en self-hosted.
+  if (isSingleClientMode()) return null;
+
   const pid = phoneNumberId.trim();
   if (!pid) return null;
 
@@ -78,6 +84,9 @@ export async function syncOmnichannelRouteForWhatsappChannel(opts: {
   activo: boolean;
   dataSchema: string;
 }): Promise<void> {
+  // single_client: no hay routing central a mantener.
+  if (isSingleClientMode()) return;
+
   const pid = opts.metaPhoneNumberId.trim();
   if (!pid) return;
 
@@ -154,6 +163,9 @@ export async function syncOmnichannelRouteForWhatsappChannel(opts: {
 }
 
 export async function deleteOmnichannelRouteByMetaPhone(metaPhoneNumberId: string): Promise<void> {
+  // single_client: no hay routing central a borrar.
+  if (isSingleClientMode()) return;
+
   const pid = metaPhoneNumberId.trim();
   if (!pid) return;
   const catalog = createServiceRoleClient();
