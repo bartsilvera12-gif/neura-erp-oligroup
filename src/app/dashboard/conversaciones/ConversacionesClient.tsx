@@ -1036,7 +1036,25 @@ export function ConversacionesClient({
     router.replace("/dashboard/conversaciones");
   }, [mode, botFlowsChecked, hasActiveBotFlows, router, searchParams]);
 
-  /** Lista: Realtime sobre conversaciones + INSERT en mensajes (cubre preview/unread si el UPDATE de conversación no emite). */
+  /**
+   * PERF-2A (patrón Papu): debounce para refetch parcial cuando llega conversación NUEVA
+   * (no presente en memoria). Eventos sobre conversaciones existentes se mergean inline,
+   * sin recargar toda la lista.
+   */
+  const debouncedRefetchRef = useRef<number | null>(null);
+  const scheduleDebouncedRefetch = useCallback(() => {
+    if (debouncedRefetchRef.current != null) return;
+    debouncedRefetchRef.current = window.setTimeout(() => {
+      debouncedRefetchRef.current = null;
+      if (document.visibilityState !== "visible") return;
+      void loadConversationsRef.current?.({ silent: true });
+    }, 1500);
+  }, []);
+
+  /**
+   * Lista: Realtime sobre conversaciones — UPDATE/DELETE mergea inline, INSERT (nueva) agenda refetch debounced.
+   * PERF-2A Papu: antes hacía full refetch por cada evento. Ahora solo agenda refetch si la conv NO está en memoria.
+   */
   useEffect(() => {
     const channel = supabaseChat
       .channel("conversaciones-inbox-list")
@@ -1045,7 +1063,45 @@ export function ConversacionesClient({
         { event: "*", schema: chatDataSchema, table: "chat_conversations" },
         (payload) => {
           trackInboxRealtimeEvent("conversation", { event: payload.eventType });
-          void loadConversationsRef.current?.({ silent: true });
+          const row = (payload.new ?? payload.old) as Record<string, unknown> | null;
+          const id = typeof row?.id === "string" ? row.id : "";
+          if (!id) return;
+          if (payload.eventType === "DELETE") {
+            setConversations((prev) => prev.filter((c) => c.id !== id));
+            return;
+          }
+          const exists = conversationsRef.current.some((c) => c.id === id);
+          if (exists) {
+            // UPDATE/INSERT sobre fila ya cargada → merge inline de campos visibles
+            const r = payload.new as Record<string, unknown>;
+            setConversations((prev) =>
+              prev.map((c) =>
+                c.id === id
+                  ? {
+                      ...c,
+                      status: (r.status as string) ?? c.status,
+                      last_message_at: (r.last_message_at as string | null) ?? c.last_message_at,
+                      last_message_preview:
+                        (r.last_message_preview as string | null) ?? c.last_message_preview,
+                      unread_count: (r.unread_count as number) ?? c.unread_count,
+                      flow_status: (r.flow_status as string) ?? c.flow_status,
+                      human_taken_over:
+                        typeof r.human_taken_over === "boolean" ? r.human_taken_over : c.human_taken_over,
+                      flow_code: (r.flow_code as string | null) ?? c.flow_code,
+                      flow_current_node:
+                        (r.flow_current_node as string | null) ?? c.flow_current_node,
+                      assigned_agent_id:
+                        (r.assigned_agent_id as string | null) ?? c.assigned_agent_id,
+                      queue_id: (r.queue_id as string | null) ?? c.queue_id,
+                      priority: (r.priority as string) ?? c.priority,
+                    }
+                  : c
+              )
+            );
+          } else if (payload.eventType === "INSERT") {
+            // Conversación nueva (no en memoria) → debounce refetch en 1.5s
+            scheduleDebouncedRefetch();
+          }
         }
       )
       .subscribe((status, err) => {
@@ -1061,9 +1117,13 @@ export function ConversacionesClient({
     return () => {
       void supabaseChat.removeChannel(channel);
     };
-  }, [chatDataSchema, supabaseChat]);
+  }, [chatDataSchema, scheduleDebouncedRefetch, supabaseChat]);
 
-  /** Mensajes entrantes: refresca inbox, beep opcional (dedupe por id de mensaje). */
+  /**
+   * Mensajes entrantes: actualiza preview/unread de la conv afectada incrementalmente, sin refetch lista.
+   * Si la conv NO está en memoria, agenda refetch debounced. Mantiene beep + dedupe de inbound.
+   * PERF-2A Papu: antes hacía full refetch por cada INSERT message.
+   */
   useEffect(() => {
     const channel = supabaseChat
       .channel("conversaciones-inbox-inbound-messages")
@@ -1072,14 +1132,38 @@ export function ConversacionesClient({
         { event: "INSERT", schema: chatDataSchema, table: "chat_messages" },
         (payload) => {
           trackInboxRealtimeEvent("message_list", { event: payload.eventType });
-          void loadConversationsRef.current?.({ silent: true });
           const row = payload.new as Record<string, unknown>;
           const convId = typeof row?.conversation_id === "string" ? row.conversation_id : "";
-          if (convId && convId === selectedIdRef.current) {
-            void loadMessagesRef.current(convId, { silent: true });
+          const createdAt = typeof row?.created_at === "string" ? row.created_at : null;
+          const content = typeof row?.content === "string" ? row.content : null;
+          const fromMe = row?.from_me === true;
+          const preview = content ? content.slice(0, 280) : null;
+
+          if (convId) {
+            const exists = conversationsRef.current.some((c) => c.id === convId);
+            if (exists) {
+              // Merge incremental: bump preview / last_message_at / unread (si inbound)
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === convId
+                    ? {
+                        ...c,
+                        last_message_at: createdAt ?? c.last_message_at,
+                        last_message_preview: preview ?? c.last_message_preview,
+                        unread_count: !fromMe ? (c.unread_count ?? 0) + 1 : c.unread_count ?? 0,
+                      }
+                    : c
+                )
+              );
+            } else {
+              scheduleDebouncedRefetch();
+            }
+            if (convId === selectedIdRef.current) {
+              void loadMessagesRef.current(convId, { silent: true });
+            }
           }
           const mid = typeof row?.id === "string" ? row.id : "";
-          if (!mid || row.from_me === true) return;
+          if (!mid || fromMe) return;
           if (inboundSoundMsgIdsRef.current.has(mid)) return;
           inboundSoundMsgIdsRef.current.add(mid);
           if (inboundSoundMsgIdsRef.current.size > 600) {
@@ -1104,15 +1188,18 @@ export function ConversacionesClient({
     return () => {
       void supabaseChat.removeChannel(channel);
     };
-  }, [chatDataSchema, supabaseChat]);
+  }, [chatDataSchema, scheduleDebouncedRefetch, supabaseChat]);
 
-  /** Respaldo si Realtime no llega (publicación RLS, pestaña en background, etc.). */
+  /**
+   * PERF-2A Papu: fallback conservador 60s para lista (antes 2.8s).
+   * Solo dispara si la pestaña está visible y realtime puede haber perdido eventos.
+   */
   useEffect(() => {
     const id = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       trackInboxPollingList({ visibility: "visible" });
       void loadConversationsRef.current?.({ silent: true });
-    }, 2800);
+    }, 60_000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -1128,14 +1215,17 @@ export function ConversacionesClient({
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
 
-  /** Con hilo abierto: sondeo corto por si Realtime no entrega INSERT/UPDATE (p. ej. webhook vía PG). */
+  /**
+   * PERF-2A Papu: fallback conservador 30s para hilo abierto (antes 2.8s).
+   * Realtime de mensajes del hilo (filter por conversation_id) ya hace merge incremental abajo.
+   */
   useEffect(() => {
     if (!selectedId) return;
     const id = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       trackInboxPollingThread({ has_selected: true });
       void loadMessagesRef.current(selectedId, { silent: true });
-    }, 2800);
+    }, 30_000);
     return () => window.clearInterval(id);
   }, [selectedId]);
 

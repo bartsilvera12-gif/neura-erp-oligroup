@@ -524,29 +524,34 @@ async function fetchChatConversationsUnsafe(
     return { builder: qb };
   };
 
+  /**
+   * PERF-TRIPLE7-A: limitar carga inicial a 100. Antes traía hasta 1000 (default PostgREST).
+   * Con 3963 conversaciones (~99% bot), el cliente paginará por scroll en fase posterior.
+   * Se aplica solo en single_client; multi_tenant mantiene comportamiento actual.
+   */
+  const INITIAL_LIST_LIMIT_SINGLE_CLIENT = 100;
+  const isSingleClient = String(process.env.NEURA_INSTANCE_MODE ?? "").trim() === "single_client";
+
   /* PostgREST: desempaquetar `.builder` — el builder es thenable y no puede devolverse solo desde async. */
   let q: any = (await buildFilteredConversationQuery(convSelectWithWait)).builder;
-  let { data: convs, error } = await q.order("last_message_at", {
-    ascending: false,
-    nullsFirst: false,
-  });
+  q = q.order("last_message_at", { ascending: false, nullsFirst: false });
+  if (isSingleClient) q = q.limit(INITIAL_LIST_LIMIT_SINGLE_CLIENT);
+  let { data: convs, error } = await q;
 
   if (error && isMissingColumnError(error.message, "assignment_wait_code")) {
     console.warn("[fetchChatConversations] assignment_wait_code ausente; reintento sin columna");
     q = (await buildFilteredConversationQuery(convSelectLegacy)).builder;
-    ({ data: convs, error } = await q.order("last_message_at", {
-      ascending: false,
-      nullsFirst: false,
-    }));
+    q = q.order("last_message_at", { ascending: false, nullsFirst: false });
+    if (isSingleClient) q = q.limit(INITIAL_LIST_LIMIT_SINGLE_CLIENT);
+    ({ data: convs, error } = await q);
   }
 
   if (error) {
     console.warn("[fetchChatConversations] reintento select mínimo sin priority ni assignment_wait_code");
     q = (await buildFilteredConversationQuery(convSelectLegacyNoPriority)).builder;
-    ({ data: convs, error } = await q.order("last_message_at", {
-      ascending: false,
-      nullsFirst: false,
-    }));
+    q = q.order("last_message_at", { ascending: false, nullsFirst: false });
+    if (isSingleClient) q = q.limit(INITIAL_LIST_LIMIT_SINGLE_CLIENT);
+    ({ data: convs, error } = await q);
   }
 
   if (error) {
@@ -793,6 +798,7 @@ async function fetchChatConversationsUnsafe(
   const awaitingById: Record<string, string | null> = {};
   const clientTurnById: Record<string, string | null> = {};
   if (convIdList.length > 0) {
+    let rpcMissing = false;
     try {
       const { data: rpcRows, error: rpcErr } = await catalogSr.rpc("neura_inbox_awaiting_reply_since_batch", {
         p_schema: dataSchema,
@@ -800,6 +806,11 @@ async function fetchChatConversationsUnsafe(
         p_conversation_ids: convIdList,
       });
       if (rpcErr) {
+        const msg = String(rpcErr.message ?? "").toLowerCase();
+        rpcMissing =
+          (rpcErr as { code?: string }).code === "PGRST202" ||
+          msg.includes("could not find the function") ||
+          msg.includes("does not exist");
         console.warn("[fetchChatConversations] awaiting_reply RPC:", rpcErr.message);
       } else if (Array.isArray(rpcRows)) {
         for (const r of rpcRows as {
@@ -814,15 +825,28 @@ async function fetchChatConversationsUnsafe(
         }
       }
     } catch (e) {
-      console.warn("[fetchChatConversations] awaiting_reply RPC:", e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : String(e);
+      rpcMissing = msg.toLowerCase().includes("could not find the function") || msg.toLowerCase().includes("does not exist");
+      console.warn("[fetchChatConversations] awaiting_reply RPC:", msg);
     }
-    const lastByConv = await mapLastMessageByConversation(supabase, empresa_id, convIdList);
-    for (const id of convIdList) {
-      if (awaitingById[id] != null || clientTurnById[id] != null) continue;
-      const last = lastByConv[id];
-      if (!last?.created_at) continue;
-      if (!last.from_me) awaitingById[id] = last.created_at;
-      else clientTurnById[id] = last.created_at;
+    /**
+     * PERF-TRIPLE7-A: si el RPC no existe (instancia single_client sin función),
+     * NO ejecutar el fallback `mapLastMessageByConversation` que ronda 70 ms × 50 chunks
+     * (~3.5 s solo en esta etapa) por usar ROW_NUMBER OVER PARTITION sobre 60k+ mensajes.
+     * Dejamos `awaiting_*_since` en null; el cliente puede pedirlos on-demand al abrir el hilo
+     * o se completan cuando un próximo PERF cree la función en el schema dedicado.
+     */
+    if (!rpcMissing) {
+      const lastByConv = await mapLastMessageByConversation(supabase, empresa_id, convIdList);
+      for (const id of convIdList) {
+        if (awaitingById[id] != null || clientTurnById[id] != null) continue;
+        const last = lastByConv[id];
+        if (!last?.created_at) continue;
+        if (!last.from_me) awaitingById[id] = last.created_at;
+        else clientTurnById[id] = last.created_at;
+      }
+    } else {
+      console.info("[fetchChatConversations] awaiting_reply fallback skipped (rpc missing in schema)");
     }
   }
 
