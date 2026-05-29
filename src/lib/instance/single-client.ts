@@ -20,7 +20,14 @@ const SINGLE_CLIENT_MODE_VALUE = "single_client" as const;
 export type NeuraInstanceMode = typeof SINGLE_CLIENT_MODE_VALUE | "multi_tenant";
 
 function readMode(): NeuraInstanceMode {
-  const raw = (process.env.NEURA_INSTANCE_MODE ?? "").trim().toLowerCase();
+  // Server: process.env.NEURA_INSTANCE_MODE (runtime).
+  // Browser: process.env.NEXT_PUBLIC_NEURA_INSTANCE_MODE (Next.js inlinea NEXT_PUBLIC_* en build).
+  // Sin esto el bundle del browser SIEMPRE cae al sentinel legacy (zentra_erp), rompiendo single_client.
+  const raw = (
+    process.env.NEURA_INSTANCE_MODE ??
+    process.env.NEXT_PUBLIC_NEURA_INSTANCE_MODE ??
+    ""
+  ).trim().toLowerCase();
   return raw === SINGLE_CLIENT_MODE_VALUE ? SINGLE_CLIENT_MODE_VALUE : "multi_tenant";
 }
 
@@ -40,7 +47,12 @@ export function getInstanceMode(): NeuraInstanceMode {
  */
 export function getSingleClientSchemaOrNull(): string | null {
   if (!isSingleClientMode()) return null;
-  const raw = (process.env.NEURA_CLIENT_SCHEMA ?? "").trim();
+  // Mismo fallback que readMode(): server lee NEURA_*, browser NEXT_PUBLIC_NEURA_*.
+  const raw = (
+    process.env.NEURA_CLIENT_SCHEMA ??
+    process.env.NEXT_PUBLIC_NEURA_CLIENT_SCHEMA ??
+    ""
+  ).trim();
   if (raw.length === 0) {
     throw new Error(
       "[single-client] NEURA_INSTANCE_MODE=single_client pero NEURA_CLIENT_SCHEMA no está definida.",
@@ -61,6 +73,10 @@ export function assertSingleClientSchema(): string {
 
 /** Nombre comercial del cliente (UI/branding). Solo informativo. */
 export function getSingleClientName(): string {
-  const raw = (process.env.NEURA_CLIENT_NAME ?? "").trim();
+  const raw = (
+    process.env.NEURA_CLIENT_NAME ??
+    process.env.NEXT_PUBLIC_NEURA_CLIENT_NAME ??
+    ""
+  ).trim();
   return raw.length > 0 ? raw : "ERP";
 }
