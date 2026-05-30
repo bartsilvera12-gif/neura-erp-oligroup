@@ -1,8 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
+import { getSorteos } from "@/lib/sorteos/actions";
+import type { Sorteo } from "@/lib/sorteos/types";
+
+type WindowStatus = "open" | "expired" | "unknown";
 
 type TicketRow = {
   id: string;
@@ -14,7 +18,28 @@ type TicketRow = {
   telefono: string | null;
   numero_orden: string | null;
   created_at: string;
+  conversation_id: string | null;
+  channel_id: string | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  whatsapp_window_status: WindowStatus;
+  whatsapp_window_label: string;
+  whatsapp_window_remaining_ms: number | null;
+  last_inbound_at: string | null;
 };
+
+type ListResponse = {
+  success?: boolean;
+  data?: TicketRow[];
+  total?: number | null;
+  limit?: number;
+  offset?: number;
+  hasMore?: boolean;
+  error?: string;
+};
+
+const PAGE_SIZE = 100;
+const ALL_SORTEOS_VALUE = "__all__";
 
 const INPUT_CLS =
   "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm transition-colors placeholder:text-slate-400 hover:border-[#4FAEB2]/60 focus:border-[#4FAEB2] focus:outline-none focus:ring-2 focus:ring-[#4FAEB2]/20";
@@ -29,26 +54,10 @@ const LABEL_CLS =
 
 type StatusMeta = { label: string; chip: string; dot: string };
 const STATUS_META: Record<string, StatusMeta> = {
-  pending: {
-    label: "Pendiente",
-    chip: "border-amber-200 bg-amber-50 text-amber-700",
-    dot: "bg-amber-500",
-  },
-  generated: {
-    label: "Generado",
-    chip: "border-[#4FAEB2]/30 bg-[#4FAEB2]/10 text-[#3F8E91]",
-    dot: "bg-[#4FAEB2]",
-  },
-  sent: {
-    label: "Enviado",
-    chip: "border-emerald-200 bg-emerald-50 text-emerald-700",
-    dot: "bg-emerald-500",
-  },
-  error: {
-    label: "Error",
-    chip: "border-rose-200 bg-rose-50 text-rose-700",
-    dot: "bg-rose-500",
-  },
+  pending: { label: "Pendiente", chip: "border-amber-200 bg-amber-50 text-amber-700", dot: "bg-amber-500" },
+  generated: { label: "Generado", chip: "border-[#4FAEB2]/30 bg-[#4FAEB2]/10 text-[#3F8E91]", dot: "bg-[#4FAEB2]" },
+  sent: { label: "Enviado", chip: "border-emerald-200 bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
+  error: { label: "Error", chip: "border-rose-200 bg-rose-50 text-rose-700", dot: "bg-rose-500" },
 };
 function statusMeta(value: string): StatusMeta {
   return (
@@ -60,42 +69,96 @@ function statusMeta(value: string): StatusMeta {
   );
 }
 
+function pickDefaultSorteoId(list: Sorteo[]): string {
+  if (!list.length) return ALL_SORTEOS_VALUE;
+  const byCreated = (a: Sorteo, b: Sorteo) =>
+    (b.created_at ?? "").localeCompare(a.created_at ?? "");
+  const activos = list.filter((s) => s.estado === "activo").sort(byCreated);
+  if (activos[0]) return activos[0].id;
+  const all = [...list].sort(byCreated);
+  return all[0]?.id ?? ALL_SORTEOS_VALUE;
+}
+
+function windowChipClasses(status: WindowStatus): string {
+  if (status === "open") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "expired") return "border-rose-200 bg-rose-50 text-rose-700";
+  return "border-slate-200 bg-slate-50 text-slate-500";
+}
+
 export default function SorteosTicketsPage() {
   const [rows, setRows] = useState<TicketRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [sorteoId, setSorteoId] = useState("");
+  const [sorteoId, setSorteoId] = useState<string>(""); // "" = aún no resuelto, ALL_SORTEOS_VALUE = todos
+  const [sorteos, setSorteos] = useState<Sorteo[]>([]);
+  const [sorteosLoaded, setSorteosLoaded] = useState(false);
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
 
-  async function load() {
+  // 1) Carga inicial de sorteos para el selector + default activo más reciente.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await getSorteos();
+        if (cancelled) return;
+        setSorteos(list);
+        setSorteoId(pickDefaultSorteoId(list));
+      } catch {
+        if (cancelled) return;
+        setSorteos([]);
+        setSorteoId(ALL_SORTEOS_VALUE);
+      } finally {
+        if (!cancelled) setSorteosLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function load(opts: { sorteoId: string; status: string; q: string }) {
     setLoading(true);
     setErr(null);
     try {
       const sp = new URLSearchParams();
-      if (sorteoId.trim()) sp.set("sorteo_id", sorteoId.trim());
-      if (status.trim()) sp.set("status", status.trim());
-      if (q.trim()) sp.set("q", q.trim());
+      if (opts.sorteoId && opts.sorteoId !== ALL_SORTEOS_VALUE) {
+        sp.set("sorteo_id", opts.sorteoId);
+      }
+      if (opts.status.trim()) sp.set("status", opts.status.trim());
+      if (opts.q.trim()) sp.set("q", opts.q.trim());
+      sp.set("limit", String(PAGE_SIZE));
+      sp.set("offset", "0");
+
       const res = await fetchWithSupabaseSession(`/api/sorteos/tickets?${sp.toString()}`, {
         cache: "no-store",
       });
-      const json = (await res.json()) as { success?: boolean; data?: TicketRow[]; error?: string };
+      const json = (await res.json()) as ListResponse;
       if (!res.ok || !json.success) {
         throw new Error(json.error?.trim() || `No se pudo cargar (${res.status})`);
       }
       setRows(Array.isArray(json.data) ? json.data : []);
+      setTotal(typeof json.total === "number" ? json.total : null);
+      setHasMore(Boolean(json.hasMore));
     } catch (e) {
+      setRows([]);
+      setTotal(null);
+      setHasMore(false);
       setErr(e instanceof Error ? e.message : "Error");
     } finally {
       setLoading(false);
     }
   }
 
+  // 2) Cuando se resuelve el default de sorteo, lanzar la primera carga.
   useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- carga inicial; filtros con botón Filtrar
-  }, []);
+    if (!sorteosLoaded || !sorteoId) return;
+    void load({ sorteoId, status, q });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sorteosLoaded, sorteoId]);
 
   async function openSignedUrl(ticketId: string) {
     setBusyId(ticketId);
@@ -127,7 +190,7 @@ export default function SorteosTicketsPage() {
       });
       const json = (await res.json()) as { success?: boolean; error?: string };
       if (!res.ok || !json.success) throw new Error(json.error || "Falló reenvío");
-      await load();
+      await load({ sorteoId, status, q });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Error");
     } finally {
@@ -145,13 +208,19 @@ export default function SorteosTicketsPage() {
       });
       const json = (await res.json()) as { success?: boolean; error?: string };
       if (!res.ok || !json.success) throw new Error(json.error || "Falló regeneración");
-      await load();
+      await load({ sorteoId, status, q });
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Error");
     } finally {
       setBusyId(null);
     }
   }
+
+  const sortedSorteos = useMemo(
+    () =>
+      [...sorteos].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "")),
+    [sorteos],
+  );
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -195,14 +264,29 @@ export default function SorteosTicketsPage() {
           </h3>
         </div>
         <div className="mt-4 flex flex-wrap items-end gap-3">
-          <div className="w-[14rem]">
-            <label className={LABEL_CLS}>Sorteo ID</label>
-            <input
-              className={`${INPUT_CLS} font-mono text-xs`}
+          <div className="w-[18rem]">
+            <label className={LABEL_CLS}>Sorteo</label>
+            <select
+              className={SELECT_CLS}
+              style={CHEVRON_STYLE}
               value={sorteoId}
+              disabled={!sorteosLoaded}
               onChange={(e) => setSorteoId(e.target.value)}
-              placeholder="uuid"
-            />
+            >
+              {!sorteosLoaded && <option value="">Cargando sorteos…</option>}
+              {sorteosLoaded && sortedSorteos.length === 0 && (
+                <option value={ALL_SORTEOS_VALUE}>Todos los sorteos</option>
+              )}
+              {sorteosLoaded &&
+                sortedSorteos.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.nombre} {s.estado === "activo" ? "· activo" : `· ${s.estado}`}
+                  </option>
+                ))}
+              {sorteosLoaded && sortedSorteos.length > 0 && (
+                <option value={ALL_SORTEOS_VALUE}>— Todos los sorteos —</option>
+              )}
+            </select>
           </div>
           <div className="w-[12rem]">
             <label className={LABEL_CLS}>Estado</label>
@@ -225,24 +309,26 @@ export default function SorteosTicketsPage() {
               className={INPUT_CLS}
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Nombre, doc o teléfono…"
+              placeholder="Nombre, doc, teléfono u orden…"
             />
           </div>
           <button
             type="button"
-            onClick={() => void load()}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-[#4FAEB2] px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-[#4FAEB2]/25 transition-colors hover:bg-[#3F8E91]"
+            onClick={() => void load({ sorteoId, status, q })}
+            disabled={!sorteosLoaded}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#4FAEB2] px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-[#4FAEB2]/25 transition-colors hover:bg-[#3F8E91] disabled:cursor-not-allowed disabled:opacity-50"
           >
             Filtrar
           </button>
-          {sorteoId || status || q ? (
+          {status || q || (sorteosLoaded && sorteoId !== pickDefaultSorteoId(sorteos)) ? (
             <button
               type="button"
               onClick={() => {
-                setSorteoId("");
                 setStatus("");
                 setQ("");
-                void load();
+                const def = pickDefaultSorteoId(sorteos);
+                setSorteoId(def);
+                void load({ sorteoId: def, status: "", q: "" });
               }}
               className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition-colors hover:border-[#4FAEB2]/60 hover:bg-[#4FAEB2]/5 hover:text-[#3F8E91]"
             >
@@ -270,6 +356,8 @@ export default function SorteosTicketsPage() {
           </div>
           <span className="inline-flex items-center gap-1 rounded-full border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-2.5 py-0.5 text-[11px] font-semibold text-[#3F8E91]">
             {rows.length}
+            {typeof total === "number" && total > rows.length ? ` de ${total}` : ""}
+            {hasMore ? " · hay más" : ""}
           </span>
         </div>
 
@@ -287,12 +375,21 @@ export default function SorteosTicketsPage() {
                   <th className="px-4 py-3">Orden</th>
                   <th className="px-4 py-3">Cliente</th>
                   <th className="px-4 py-3">Doc / Tel</th>
+                  <th className="px-4 py-3">Ventana WA</th>
                   <th className="px-4 py-3 text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {rows.map((r) => {
                   const meta = statusMeta(r.status);
+                  const wStatus = r.whatsapp_window_status;
+                  const resendDisabled = busyId === r.id || wStatus !== "open";
+                  const resendTitle =
+                    wStatus === "open"
+                      ? "Reenviar la imagen por WhatsApp al cliente"
+                      : wStatus === "expired"
+                        ? "Fuera de la ventana de 24h de WhatsApp. En la siguiente fase se enviará por plantilla aprobada."
+                        : "No se pudo determinar la ventana de 24h. Para reenviar se requiere plantilla aprobada.";
                   return (
                     <tr key={r.id} className="transition-colors hover:bg-[#4FAEB2]/5">
                       <td className="px-4 py-3">
@@ -313,6 +410,14 @@ export default function SorteosTicketsPage() {
                         {(r.telefono ?? "").trim() || "—"}
                       </td>
                       <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${windowChipClasses(wStatus)}`}
+                          title={resendTitle}
+                        >
+                          {r.whatsapp_window_label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
                         <div className="flex flex-wrap justify-end gap-1.5">
                           <button
                             type="button"
@@ -324,8 +429,9 @@ export default function SorteosTicketsPage() {
                           </button>
                           <button
                             type="button"
-                            disabled={busyId === r.id}
+                            disabled={resendDisabled}
                             onClick={() => void resendTicket(r.id)}
+                            title={resendTitle}
                             className="inline-flex items-center rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Reenviar WA
@@ -345,7 +451,7 @@ export default function SorteosTicketsPage() {
                 })}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-sm text-slate-400">
+                    <td colSpan={6} className="px-4 py-12 text-center text-sm text-slate-400">
                       Sin registros
                     </td>
                   </tr>
@@ -355,6 +461,11 @@ export default function SorteosTicketsPage() {
           </div>
         )}
       </div>
+
+      {/* TODO Fase 2: cuando la ventana WA esté vencida, ofrecer botón
+          "Enviar por plantilla" usando una HSM Meta aprobada (campaign template).
+          No implementado hoy: requiere alta de plantilla en Meta Business
+          Manager + flujo de campaña/plantilla en backend. */}
     </div>
   );
 }

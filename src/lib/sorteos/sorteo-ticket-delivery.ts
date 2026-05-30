@@ -834,11 +834,16 @@ export function buildImageOnlyStubText(config: Record<string, unknown>): string 
 
 /**
  * Reenvía por WhatsApp un ticket ya generado (misma fila, nuevo envío; no duplica orden).
+ *
+ * `captionOverride` (opcional) permite reemplazar el caption del envío manual sin
+ * tocar el envío automático original del flujo (que sigue derivando el caption
+ * desde `ticket_image_config`). Cuando se provee, gana sobre cualquier config.
  */
 export async function resendSorteoTicketByDeliveryId(input: {
   supabase: AppSupabaseClient;
   empresaId: string;
   deliveryId: string;
+  captionOverride?: string;
 }): Promise<{ ok: boolean; error?: string }> {
   const schema = await fetchDataSchemaForEmpresaId(input.empresaId);
   const db = input.supabase;
@@ -892,10 +897,12 @@ export async function resendSorteoTicketByDeliveryId(input: {
   }
 
   const numOrden = String((row as { numero_orden?: string | null }).numero_orden ?? "");
-  const caption =
-    (cfg.caption ?? "").trim() ||
-    (cfg.title ?? "").trim() ||
-    `Orden Nº ${numOrden} — ${sorteoNombre}`.slice(0, 1024);
+  const overrideCaption = (input.captionOverride ?? "").trim();
+  const caption = overrideCaption
+    ? overrideCaption.slice(0, 1024)
+    : (cfg.caption ?? "").trim() ||
+      (cfg.title ?? "").trim() ||
+      `Orden Nº ${numOrden} — ${sorteoNombre}`.slice(0, 1024);
 
   let sendResult: { ok: boolean; waMessageId?: string | null; raw?: unknown; error?: string };
   if (outbound.provider === "ycloud") {
