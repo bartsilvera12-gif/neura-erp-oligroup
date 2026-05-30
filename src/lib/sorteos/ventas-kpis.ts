@@ -70,30 +70,39 @@ async function logDashboardDebug(
       const sch = assertAllowedChatDataSchema(schema);
       const tent = quoteSchemaTable(sch, "sorteo_entradas");
       const tcup = quoteSchemaTable(sch, "sorteo_cupones");
+      const tsor = quoteSchemaTable(sch, "sorteos");
       const [eh, em, ch, cm] = await Promise.all([
         pool.query(
           `SELECT COUNT(*)::bigint AS n FROM ${tent} e
-           WHERE e.empresa_id = $1::uuid AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
+           INNER JOIN ${tsor} s ON s.id = e.sorteo_id
+           WHERE e.empresa_id = $1::uuid AND s.estado IN ('activo','pausado')
+           AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
            AND e.estado_pago <> 'rechazado'`,
           [empresaId, day.start, day.end]
         ),
         pool.query(
           `SELECT COUNT(*)::bigint AS n FROM ${tent} e
-           WHERE e.empresa_id = $1::uuid AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
+           INNER JOIN ${tsor} s ON s.id = e.sorteo_id
+           WHERE e.empresa_id = $1::uuid AND s.estado IN ('activo','pausado')
+           AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
            AND e.estado_pago <> 'rechazado'`,
           [empresaId, month.start, month.end]
         ),
         pool.query(
           `SELECT COUNT(c.id)::bigint AS n FROM ${tcup} c
            INNER JOIN ${tent} e ON e.id = c.entrada_id
-           WHERE e.empresa_id = $1::uuid AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
+           INNER JOIN ${tsor} s ON s.id = e.sorteo_id
+           WHERE e.empresa_id = $1::uuid AND s.estado IN ('activo','pausado')
+           AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
            AND e.estado_pago <> 'rechazado'`,
           [empresaId, day.start, day.end]
         ),
         pool.query(
           `SELECT COUNT(c.id)::bigint AS n FROM ${tcup} c
            INNER JOIN ${tent} e ON e.id = c.entrada_id
-           WHERE e.empresa_id = $1::uuid AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
+           INNER JOIN ${tsor} s ON s.id = e.sorteo_id
+           WHERE e.empresa_id = $1::uuid AND s.estado IN ('activo','pausado')
+           AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
            AND e.estado_pago <> 'rechazado'`,
           [empresaId, month.start, month.end]
         ),
@@ -137,13 +146,19 @@ async function fetchKpiWindowFromPg(
   const sch = assertAllowedChatDataSchema(schema);
   const tent = quoteSchemaTable(sch, "sorteo_entradas");
   const tcup = quoteSchemaTable(sch, "sorteo_cupones");
+  const tsor = quoteSchemaTable(sch, "sorteos");
 
+  // KPIs operativos: solo sorteos vigentes (activo/pausado). Excluye
+  // finalizado/cerrado para que las cards reflejen el sorteo en curso y no
+  // sumen históricos.
   const [bRes, mRes] = await Promise.all([
     pool.query(
       `SELECT COUNT(c.id) AS boletos
        FROM ${tcup} c
        INNER JOIN ${tent} e ON e.id = c.entrada_id
+       INNER JOIN ${tsor} s ON s.id = e.sorteo_id
        WHERE e.empresa_id = $1::uuid
+         AND s.estado IN ('activo','pausado')
          AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
          AND e.estado_pago <> 'rechazado'`,
       [empresaId, start, end]
@@ -151,7 +166,9 @@ async function fetchKpiWindowFromPg(
     pool.query(
       `SELECT COALESCE(SUM(e.monto_total), 0) AS monto
        FROM ${tent} e
+       INNER JOIN ${tsor} s ON s.id = e.sorteo_id
        WHERE e.empresa_id = $1::uuid
+         AND s.estado IN ('activo','pausado')
          AND e.created_at >= $2::timestamptz AND e.created_at <= $3::timestamptz
          AND e.estado_pago <> 'rechazado'`,
       [empresaId, start, end]
@@ -203,17 +220,39 @@ export async function getSorteosVentasKpis(): Promise<SorteosVentasKpis> {
   try {
     const supabase = await getChatServiceClientForEmpresa(empresaId);
 
+    // KPIs operativos: filtrar entradas a las que pertenecen a sorteos vigentes
+    // (activo/pausado). Se resuelve primero la lista de IDs y luego se aplica
+    // como `in('sorteo_id', ...)` para no depender de FK embebida en PostgREST.
+    const activeSorteosRes = await supabase
+      .from("sorteos")
+      .select("id")
+      .eq("empresa_id", empresaId)
+      .in("estado", ["activo", "pausado"]);
+
+    if (activeSorteosRes.error) {
+      logDashboardError(empresaId, schema, activeSorteosRes.error);
+      return empty;
+    }
+
+    const activeIds = (activeSorteosRes.data ?? []).map((r) => r.id as string);
+    if (activeIds.length === 0) {
+      void logDashboardDebug(pool, schema, empresaId, day, month, "postgrest", empty);
+      return empty;
+    }
+
     const [dayRes, monthRes] = await Promise.all([
       supabase
         .from("sorteo_entradas")
         .select("cantidad_boletos, monto_total, estado_pago")
         .eq("empresa_id", empresaId)
+        .in("sorteo_id", activeIds)
         .gte("created_at", day.start)
         .lte("created_at", day.end),
       supabase
         .from("sorteo_entradas")
         .select("cantidad_boletos, monto_total, estado_pago")
         .eq("empresa_id", empresaId)
+        .in("sorteo_id", activeIds)
         .gte("created_at", month.start)
         .lte("created_at", month.end),
     ]);
