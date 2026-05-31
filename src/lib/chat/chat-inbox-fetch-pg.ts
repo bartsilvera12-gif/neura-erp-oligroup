@@ -35,6 +35,7 @@ import type {
   ConversacionesVista,
   InboxConversation,
 } from "@/lib/chat/actions";
+import { encodeChatConversationsCursor } from "@/lib/chat/chat-conversations-cursor";
 import { normalizeChannelType } from "@/lib/chat/channel-type-utils";
 
 type FlowCtx = {
@@ -181,7 +182,9 @@ async function pgFetchConversationsWithColumns(
   schema: string,
   whereSql: string,
   params: unknown[],
-  variant: "full" | "legacy" | "min"
+  variant: "full" | "legacy" | "min",
+  /** PERF-3: paginación opcional. Si no se pasa, comportamiento legacy (sin LIMIT) para no romper otros clientes. */
+  pagination?: { peekLimit?: number; cursor?: { lma: string; id: string } | null }
 ): Promise<Record<string, unknown>[] | null> {
   const qt = quoteSchemaTable(schema, "chat_conversations");
   const colsFull = `
@@ -200,14 +203,27 @@ async function pgFetchConversationsWithColumns(
     flow_code, flow_current_node, flow_status, human_taken_over, active_flow_session_id
   `;
   const cols = variant === "full" ? colsFull : variant === "legacy" ? colsLegacy : colsMin;
+  const paramsLocal = params.slice();
+  let extraWhere = "";
+  if (pagination?.cursor?.lma && pagination?.cursor?.id) {
+    paramsLocal.push(pagination.cursor.lma);
+    const pLma = paramsLocal.length;
+    paramsLocal.push(pagination.cursor.id);
+    const pId = paramsLocal.length;
+    extraWhere = ` AND (last_message_at < $${pLma}::timestamptz OR (last_message_at = $${pLma}::timestamptz AND id < $${pId}::uuid))`;
+  }
+  let limitSql = "";
+  if (typeof pagination?.peekLimit === "number" && pagination.peekLimit > 0) {
+    limitSql = ` LIMIT ${Math.trunc(pagination.peekLimit)}`;
+  }
   const q = `
     SELECT ${cols}
     FROM ${qt}
-    WHERE ${whereSql}
-    ORDER BY last_message_at DESC NULLS LAST
+    WHERE ${whereSql}${extraWhere}
+    ORDER BY last_message_at DESC NULLS LAST, id DESC${limitSql}
   `;
   try {
-    const r = await pool.query(q, params);
+    const r = await pool.query(q, paramsLocal);
     return (r.rows ?? []) as Record<string, unknown>[];
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -275,7 +291,9 @@ export async function fetchChatConversationsFromTenantPg(
   dataSchema: string,
   vista: ConversacionesVista,
   filters: ChatInboxFilters | undefined,
-  ctx: FlowCtx
+  ctx: FlowCtx,
+  /** PERF-3: paginación opcional. Si no se pasa, comportamiento legacy (sin LIMIT, sin cursor). */
+  pagination?: { pageLimit: number; decodedCursor: { lma: string; id: string } | null }
 ): Promise<ChatConversationsFetchResult> {
   const { supabase, catalogSr, empresa_id, usuario_id } = ctx;
 
@@ -286,7 +304,7 @@ export async function fetchChatConversationsFromTenantPg(
   );
   const activeFlowCatalogRowCount = activeFlowRows.length;
   if (vista === "bot" && activeFlowCatalogRowCount === 0) {
-    return { conversations: [], base_row_count: 0 };
+    return { conversations: [], base_row_count: 0, hasMore: false, nextCursor: null };
   }
 
   const scope = await getOmnicanalScope(supabase, empresa_id, usuario_id, {
@@ -373,14 +391,17 @@ export async function fetchChatConversationsFromTenantPg(
 
   const whereSql = whereParts.join(" AND ");
 
-  const full = await pgFetchConversationsWithColumns(pool, dataSchema, whereSql, params, "full");
+  const tenantPagination = pagination
+    ? { peekLimit: pagination.pageLimit + 1, cursor: pagination.decodedCursor ?? null }
+    : undefined;
+  const full = await pgFetchConversationsWithColumns(pool, dataSchema, whereSql, params, "full", tenantPagination);
   const legacy =
     full === null
-      ? await pgFetchConversationsWithColumns(pool, dataSchema, whereSql, params, "legacy")
+      ? await pgFetchConversationsWithColumns(pool, dataSchema, whereSql, params, "legacy", tenantPagination)
       : null;
   const min =
     full === null && legacy === null
-      ? await pgFetchConversationsWithColumns(pool, dataSchema, whereSql, params, "min")
+      ? await pgFetchConversationsWithColumns(pool, dataSchema, whereSql, params, "min", tenantPagination)
       : null;
 
   let list: Record<string, unknown>[];
@@ -405,15 +426,31 @@ export async function fetchChatConversationsFromTenantPg(
       conversations: [],
       base_row_count: 0,
       transient_list_error: true,
+      hasMore: false,
+      nextCursor: null,
     };
   }
 
+  // PERF-3: peek/slice + cursor del universo (igual lógica que el path PostgREST).
+  let tenantHasMore = false;
+  let tenantNextCursor: { lma: string; id: string } | null = null;
+  if (pagination && list.length > pagination.pageLimit) {
+    tenantHasMore = true;
+    list = list.slice(0, pagination.pageLimit);
+  }
+  if (pagination && list.length > 0) {
+    const lastUniverse = list[list.length - 1] as { id?: unknown; last_message_at?: unknown };
+    const lma = isoPg(lastUniverse.last_message_at) ?? "";
+    const id = typeof lastUniverse.id === "string" ? lastUniverse.id : "";
+    if (tenantHasMore && lma && id) tenantNextCursor = { lma, id };
+  }
   const totalAfterQuery = list.length;
   console.info("[chat-list][fetch-result]", {
     source: "tenant_pg",
     schema: dataSchema,
     empresa_id,
     total_fetched: totalAfterQuery,
+    has_more: tenantHasMore,
     timestamp: new Date().toISOString(),
   });
 
@@ -628,7 +665,12 @@ export async function fetchChatConversationsFromTenantPg(
   }
 
   if (list.length === 0) {
-    return { conversations: [], base_row_count: totalAfterQuery };
+    return {
+      conversations: [],
+      base_row_count: totalAfterQuery,
+      hasMore: tenantHasMore,
+      nextCursor: tenantNextCursor ? encodeChatConversationsCursor(tenantNextCursor) : null,
+    };
   }
 
   const convIdList = list.map((row) => String(row.id ?? "").trim()).filter(Boolean);
@@ -906,5 +948,10 @@ export async function fetchChatConversationsFromTenantPg(
       awaiting_client_reply_since: clientTurnById[rid] ?? null,
     };
   });
-  return { conversations: mapped as InboxConversation[], base_row_count: totalAfterQuery };
+  return {
+    conversations: mapped as InboxConversation[],
+    base_row_count: totalAfterQuery,
+    hasMore: tenantHasMore,
+    nextCursor: tenantNextCursor ? encodeChatConversationsCursor(tenantNextCursor) : null,
+  };
 }

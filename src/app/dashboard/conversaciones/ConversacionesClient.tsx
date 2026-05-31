@@ -365,6 +365,20 @@ export function ConversacionesClient({
     conversationsRef.current = conversations;
   }, [conversations]);
 
+  /**
+   * PERF-3: paginación por cursor. `nextCursor` queda apuntando al final del universo cargado.
+   * `loadMore` no resetea la lista; appendea con dedupe por id. Realtime no toca cursor ni hasMore
+   * (sigue mutando filas individuales en `conversations`).
+   */
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const nextCursorRef = useRef<string | null>(null);
+  useEffect(() => {
+    nextCursorRef.current = nextCursor;
+  }, [nextCursor]);
+  const CONVERSATIONS_PAGE_SIZE = 100;
+
   /** Boot log: snapshot de flags de Inbox. No-op si CHAT_INBOX_OBSERVABILITY=false. */
   useEffect(() => {
     logInboxFlagsBoot(getInboxFlagsSnapshot());
@@ -548,7 +562,12 @@ export function ConversacionesClient({
           conversations: rows,
           base_row_count: baseRowCount,
           transient_list_error: transientListError,
-        } = await fetchChatConversations(vista, filters);
+          hasMore: pageHasMore,
+          nextCursor: pageNextCursor,
+        } = await fetchChatConversations(vista, filters, {
+          cursor: null,
+          limit: CONVERSATIONS_PAGE_SIZE,
+        });
         if (silent) {
           chatListUiLog("refetch-result", {
             activeTab: vista,
@@ -575,6 +594,24 @@ export function ConversacionesClient({
             reason: "silent_empty_keeps_previous",
             filters: filters ?? null,
           });
+        } else if (silent && previousCount > rows.length) {
+          // PERF-3: silent refetch sobre lista paginada (>1 página) — mergeamos top fresco con
+          // tail ya cargado para NO resetear la paginación del usuario.
+          chatListUiLog("set-conversations", {
+            activeTab: vista,
+            previous_count: previousCount,
+            next_count: rows.length,
+            base_row_count: baseRowCount,
+            source: "fetchChatConversations",
+            reason: "silent_merge_keep_pagination",
+            filters: filters ?? null,
+          });
+          setConversations((prev) => {
+            const freshIds = new Set(rows.map((r) => r.id));
+            const tail = prev.filter((p) => !freshIds.has(p.id));
+            return [...rows, ...tail];
+          });
+          // No actualizamos cursor: el existente apunta más abajo del universo.
         } else {
           chatListUiLog("set-conversations", {
             activeTab: vista,
@@ -586,6 +623,8 @@ export function ConversacionesClient({
             filters: filters ?? null,
           });
           setConversations(rows);
+          setHasMore(Boolean(pageHasMore));
+          setNextCursor(pageNextCursor ?? null);
         }
         if (!silent && previousCount === 0) {
           chatListUiLog("initial-data", {
@@ -623,6 +662,39 @@ export function ConversacionesClient({
     },
     [vista]
   );
+
+  /**
+   * PERF-3: trae la siguiente tanda usando el cursor actual. NO resetea la lista; appendea con dedupe.
+   * Si no hay cursor o ya está corriendo otro loadMore, no hace nada.
+   */
+  const loadMore = useCallback(async () => {
+    const cursor = nextCursorRef.current;
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const sp = new URLSearchParams(searchParamsRef.current?.toString() ?? "");
+      const filters = parseInboxFilters(sp);
+      const {
+        conversations: rows,
+        hasMore: pageHasMore,
+        nextCursor: pageNextCursor,
+      } = await fetchChatConversations(vista, filters, {
+        cursor,
+        limit: CONVERSATIONS_PAGE_SIZE,
+      });
+      setConversations((prev) => {
+        const seen = new Set(prev.map((c) => c.id));
+        const fresh = rows.filter((r) => !seen.has(r.id));
+        return [...prev, ...fresh];
+      });
+      setHasMore(Boolean(pageHasMore));
+      setNextCursor(pageNextCursor ?? null);
+    } catch (e) {
+      setListError(e instanceof Error ? e.message : "Error al cargar más conversaciones");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, vista]);
 
   const loadMessages = useCallback(async (conversationId: string, opts?: { silent?: boolean }) => {
     const silent = opts?.silent ?? false;
@@ -2440,7 +2512,22 @@ export function ConversacionesClient({
           }`}
         >
           <div className="px-2 py-1.5 border-b border-slate-200 flex items-center justify-between gap-2 shrink-0">
-            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Chats</span>
+            <div className="flex items-baseline gap-2 min-w-0">
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Chats</span>
+              {conversations.length > 0 ? (
+                <span
+                  className="text-[10px] font-medium text-slate-500 truncate"
+                  title={
+                    hasMore
+                      ? `${conversations.length} cargadas · hay más en el universo`
+                      : `${conversations.length} conversaciones · no hay más`
+                  }
+                >
+                  {conversations.length}
+                  {hasMore ? " cargadas · hay más" : ""}
+                </span>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={() => setListColumnHidden(true)}
@@ -2566,6 +2653,25 @@ export function ConversacionesClient({
                 );
               })
             )}
+            {/* PERF-3: tira de paginación al final del listado */}
+            {!loadingList && conversations.length > 0 ? (
+              hasMore ? (
+                <div className="p-3">
+                  <button
+                    type="button"
+                    onClick={() => void loadMore()}
+                    disabled={loadingMore || !nextCursor}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:border-[#4FAEB2]/60 hover:bg-[#4FAEB2]/5 hover:text-[#3F8E91] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {loadingMore ? "Cargando…" : "Cargar más"}
+                  </button>
+                </div>
+              ) : (
+                <div className="px-3 py-3 text-[10px] text-slate-400 text-center uppercase tracking-wide">
+                  No hay más conversaciones
+                </div>
+              )
+            ) : null}
           </div>
         </div>
         ) : null}

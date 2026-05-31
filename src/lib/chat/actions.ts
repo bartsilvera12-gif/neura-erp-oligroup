@@ -76,6 +76,12 @@ import { pgMarkConversationUnreadZero, pgReleaseConversationToBot } from "@/lib/
 import { isInvalidPostgrestSchemaError } from "@/lib/chat/postgrest-schema-error";
 import { normalizeChannelType } from "@/lib/chat/channel-type-utils";
 import { fetchChatConversationsFromTenantPg } from "@/lib/chat/chat-inbox-fetch-pg";
+import {
+  clampChatConversationsPageLimit,
+  decodeChatConversationsCursor,
+  encodeChatConversationsCursor,
+  type ChatConversationsCursorPayload,
+} from "@/lib/chat/chat-conversations-cursor";
 import { withInboxLatencyMeasure } from "@/lib/chat/inbox-observability";
 import {
   pgConversationBelongsToEmpresa,
@@ -150,6 +156,21 @@ export type ChatConversationsFetchResult = {
    * El listado principal no pudo leerse (p. ej. pool PG agotado). El cliente puede conservar datos previos en refetch silencioso.
    */
   transient_list_error?: boolean;
+  /**
+   * PERF-3: paginación por cursor sobre el universo (status IN open/pending, mismo orden que la query base).
+   * `hasMore` indica que el universo tiene más filas más allá del cursor; vale incluso si la pestaña actual (Bot/Inbox)
+   * no recibió filas nuevas en esta página.
+   */
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+/**
+ * PERF-3: paginación por cursor para `fetchChatConversations`. Tipo serializable hacia el cliente.
+ */
+export type ChatConversationsPagination = {
+  cursor?: string | null;
+  limit?: number;
 };
 
 /**
@@ -196,10 +217,11 @@ async function mapLastMessageByConversation(
 
 export async function fetchChatConversations(
   vista: ConversacionesVista = "inbox",
-  filters?: ChatInboxFilters
+  filters?: ChatInboxFilters,
+  pagination?: ChatConversationsPagination
 ): Promise<ChatConversationsFetchResult> {
   /** PostgREST sigue lanzando ante error; tenant_pg puede devolver `transient_list_error` sin tirar la UI. */
-  return fetchChatConversationsUnsafe(vista, filters);
+  return fetchChatConversationsUnsafe(vista, filters, pagination);
 }
 
 type BotTabClassifyCtx = {
@@ -288,8 +310,12 @@ async function logBotTabClassificationSamplePostgrest(
 
 async function fetchChatConversationsUnsafe(
   vista: ConversacionesVista = "inbox",
-  filters?: ChatInboxFilters
+  filters?: ChatInboxFilters,
+  pagination?: ChatConversationsPagination
 ): Promise<ChatConversationsFetchResult> {
+  const pageLimit = clampChatConversationsPageLimit(pagination?.limit);
+  const decodedCursor = decodeChatConversationsCursor(pagination?.cursor);
+  const queryPeekLimit = pageLimit + 1;
   const { supabase, catalogSr, empresa_id, usuario_id, dataSchema } = await requireEmpresaTenantServiceRole();
 
   const poolInbox = getChatPostgresPool();
@@ -336,12 +362,19 @@ async function fetchChatConversationsUnsafe(
     const result = await withInboxLatencyMeasure(
       "fetchChatConversationsFromTenantPg",
       () =>
-        fetchChatConversationsFromTenantPg(poolInbox, dataSchema, vista, filters, {
-          supabase,
-          catalogSr,
-          empresa_id,
-          usuario_id,
-        }),
+        fetchChatConversationsFromTenantPg(
+          poolInbox,
+          dataSchema,
+          vista,
+          filters,
+          {
+            supabase,
+            catalogSr,
+            empresa_id,
+            usuario_id,
+          },
+          { pageLimit, decodedCursor }
+        ),
       { schema: dataSchema, vista },
     );
     if (process.env.CHAT_INBOX_OBSERVABILITY?.trim().toLowerCase() === "true") {
@@ -362,7 +395,7 @@ async function fetchChatConversationsUnsafe(
   const activeFlowCatalogRowCount = (activeFlowRows ?? []).length;
 
   if (vista === "bot" && activeFlowCatalogRowCount === 0) {
-    return { conversations: [], base_row_count: 0 };
+    return { conversations: [], base_row_count: 0, hasMore: false, nextCursor: null };
   }
 
   /**
@@ -525,32 +558,40 @@ async function fetchChatConversationsUnsafe(
   };
 
   /**
-   * PERF-TRIPLE7-A: limitar carga inicial a 100. Antes traía hasta 1000 (default PostgREST).
-   * Con 3963 conversaciones (~99% bot), el cliente paginará por scroll en fase posterior.
-   * Se aplica solo en single_client; multi_tenant mantiene comportamiento actual.
+   * PERF-TRIPLE7-A + PERF-3: paginación por cursor con peek (limit+1).
+   * - El orden agrega secundario por id DESC para que el cursor sea estable.
+   * - Cuando el cursor está presente, agregamos predicado `(lma<lc) OR (lma=lc AND id<ic)` vía `or()`.
+   * - Se aplica para single_client. multi_tenant mantiene comportamiento actual (sin limit/sin cursor).
    */
-  const INITIAL_LIST_LIMIT_SINGLE_CLIENT = 100;
   const isSingleClient = String(process.env.NEURA_INSTANCE_MODE ?? "").trim() === "single_client";
+  const applyCursorAndLimit = (qb: any): any => {
+    let next = qb.order("last_message_at", { ascending: false, nullsFirst: false });
+    next = next.order("id", { ascending: false });
+    if (isSingleClient && decodedCursor) {
+      next = next.or(
+        `last_message_at.lt.${decodedCursor.lma},and(last_message_at.eq.${decodedCursor.lma},id.lt.${decodedCursor.id})`
+      );
+    }
+    if (isSingleClient) next = next.limit(queryPeekLimit);
+    return next;
+  };
 
   /* PostgREST: desempaquetar `.builder` — el builder es thenable y no puede devolverse solo desde async. */
   let q: any = (await buildFilteredConversationQuery(convSelectWithWait)).builder;
-  q = q.order("last_message_at", { ascending: false, nullsFirst: false });
-  if (isSingleClient) q = q.limit(INITIAL_LIST_LIMIT_SINGLE_CLIENT);
+  q = applyCursorAndLimit(q);
   let { data: convs, error } = await q;
 
   if (error && isMissingColumnError(error.message, "assignment_wait_code")) {
     console.warn("[fetchChatConversations] assignment_wait_code ausente; reintento sin columna");
     q = (await buildFilteredConversationQuery(convSelectLegacy)).builder;
-    q = q.order("last_message_at", { ascending: false, nullsFirst: false });
-    if (isSingleClient) q = q.limit(INITIAL_LIST_LIMIT_SINGLE_CLIENT);
+    q = applyCursorAndLimit(q);
     ({ data: convs, error } = await q);
   }
 
   if (error) {
     console.warn("[fetchChatConversations] reintento select mínimo sin priority ni assignment_wait_code");
     q = (await buildFilteredConversationQuery(convSelectLegacyNoPriority)).builder;
-    q = q.order("last_message_at", { ascending: false, nullsFirst: false });
-    if (isSingleClient) q = q.limit(INITIAL_LIST_LIMIT_SINGLE_CLIENT);
+    q = applyCursorAndLimit(q);
     ({ data: convs, error } = await q);
   }
 
@@ -559,12 +600,39 @@ async function fetchChatConversationsUnsafe(
     throw new Error(`[fetchChatConversations] listado conversaciones: ${error.message}`);
   }
   let list = (convs ?? []) as Record<string, unknown>[];
+  /**
+   * PERF-3: detectamos si la query hizo "peek" (devolvió pageLimit+1) para saber si hay más universo.
+   * Truncamos a pageLimit ANTES de la clasificación para que el procesamiento posterior solo trabaje
+   * sobre lo que efectivamente vamos a devolver. El cursor del próximo `loadMore` se arma con el
+   * último ítem del universo (luego de truncar), porque ese es el corte hasta donde ya viajamos.
+   */
+  let postgrestHasMore = false;
+  let postgrestNextCursorPayload: ChatConversationsCursorPayload | null = null;
+  if (isSingleClient && list.length > pageLimit) {
+    postgrestHasMore = true;
+    list = list.slice(0, pageLimit);
+  }
+  if (isSingleClient && list.length > 0) {
+    const lastUniverse = list[list.length - 1] as {
+      id?: unknown;
+      last_message_at?: unknown;
+    };
+    const lmaRaw = lastUniverse.last_message_at;
+    const idRaw = lastUniverse.id;
+    const lma = typeof lmaRaw === "string" ? lmaRaw : "";
+    const id = typeof idRaw === "string" ? idRaw : "";
+    /** Solo emitimos cursor si el ítem tope tiene `last_message_at` definido (filas con NULL caen al final y son raras). */
+    if (postgrestHasMore && lma && id) {
+      postgrestNextCursorPayload = { lma, id };
+    }
+  }
   const totalAfterQuery = list.length;
   console.info("[chat-list][fetch-result]", {
     source: "postgrest",
     schema: dataSchema,
     empresa_id,
     total_fetched: totalAfterQuery,
+    has_more: postgrestHasMore,
     timestamp: new Date().toISOString(),
   });
 
@@ -791,7 +859,14 @@ async function fetchChatConversationsUnsafe(
   }
 
   if (list.length === 0) {
-    return { conversations: [], base_row_count: totalAfterQuery };
+    return {
+      conversations: [],
+      base_row_count: totalAfterQuery,
+      hasMore: postgrestHasMore,
+      nextCursor: postgrestNextCursorPayload
+        ? encodeChatConversationsCursor(postgrestNextCursorPayload)
+        : null,
+    };
   }
 
   const convIdList = list.map((row) => String((row as { id?: unknown }).id ?? "").trim()).filter(Boolean);
@@ -1078,7 +1153,14 @@ async function fetchChatConversationsUnsafe(
       awaiting_client_reply_since: clientTurnById[row.id as string] ?? null,
     };
   });
-  return { conversations: mapped, base_row_count: totalAfterQuery };
+  return {
+    conversations: mapped,
+    base_row_count: totalAfterQuery,
+    hasMore: postgrestHasMore,
+    nextCursor: postgrestNextCursorPayload
+      ? encodeChatConversationsCursor(postgrestNextCursorPayload)
+      : null,
+  };
 }
 
 /** True si la empresa tiene al menos un flujo de chat activo (tab Bot en inbox). */
