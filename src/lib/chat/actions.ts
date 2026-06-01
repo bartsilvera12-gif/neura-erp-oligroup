@@ -456,12 +456,36 @@ async function fetchChatConversationsUnsafe(
     `;
 
   /** Ver `appendOmnicanalConversationScopeToQuery`: el builder PostgREST no debe devolverse “crudo” desde async. */
+  /**
+   * Etiquetas FASE 3B: chequeo cacheado de si este schema tiene la columna
+   * hidden_by_tag. Sólo aplicable en Inbox/Bot (NO en historial).
+   */
+  let __schemaHasHiddenCache: boolean | null = null;
+  const checkSchemaHasHidden = async (): Promise<boolean> => {
+    if (__schemaHasHiddenCache !== null) return __schemaHasHiddenCache;
+    const pool = getChatPostgresPool();
+    if (!pool) {
+      __schemaHasHiddenCache = false;
+      return false;
+    }
+    const { schemaHasHiddenByTagColumn } = await import(
+      "@/lib/chat/tags/schema-has-hidden-column"
+    );
+    __schemaHasHiddenCache = await schemaHasHiddenByTagColumn(pool, dataSchema);
+    return __schemaHasHiddenCache;
+  };
+
   const buildFilteredConversationQuery = async (selectStr: string) => {
     let qb = supabase.from("chat_conversations").select(selectStr).eq("empresa_id", empresa_id);
 
     if (vista === "inbox" || vista === "bot") {
       /** Misma base abierta/pendiente; Inbox vs Bot se resuelve en memoria (`conversationBelongsToBotTab`). */
       qb = qb.in("status", ["open", "pending"]);
+      // Etiquetas FASE 3B: ocultar conversaciones con etiqueta de ocultamiento.
+      // Si el schema NO tiene la columna (otros tenants), no se agrega filtro.
+      if (await checkSchemaHasHidden()) {
+        qb = qb.or("hidden_by_tag.is.null,hidden_by_tag.eq.false");
+      }
     } else if (vista === "historial") {
       qb = qb.eq("status", "closed");
     }

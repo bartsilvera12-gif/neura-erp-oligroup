@@ -319,6 +319,14 @@ export async function fetchChatConversationsFromTenantPg(
   if (vista === "inbox" || vista === "bot") {
     /** Inbox y Bot comparten el mismo universo (abiertas/pendientes); la pestaña se decide al clasificar. */
     whereParts.push(`status IN ('open','pending')`);
+    // Etiquetas FASE 3B: guard schema-aware. Si el schema tiene la columna
+    // hidden_by_tag, excluir las ocultas. Si no, no añade nada (otros tenants).
+    const { schemaHasHiddenByTagColumn } = await import(
+      "@/lib/chat/tags/schema-has-hidden-column"
+    );
+    if (await schemaHasHiddenByTagColumn(pool, dataSchema)) {
+      whereParts.push(`COALESCE(hidden_by_tag, false) = false`);
+    }
   } else if (vista === "historial") {
     whereParts.push(`status = 'closed'`);
   }

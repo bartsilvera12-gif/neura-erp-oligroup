@@ -234,6 +234,34 @@ export async function persistInboundEarlyViaPg(
         err: (e as { message?: string }).message,
       });
     }
+
+    // Etiquetas FASE 3A: si la conversación estaba oculta por una etiqueta,
+    // el inbound del cliente la reactiva (limpia hidden_by_tag + history).
+    // Idempotente y no-op si no aplica. Nunca falla el persist por esto.
+    try {
+      const { reactivateHiddenConversationIfNeeded } = await import(
+        "@/lib/chat/tags/reactivate-hidden-conversation"
+      );
+      const rRes = await reactivateHiddenConversationIfNeeded({
+        pool,
+        schema,
+        empresaId: input.empresaId,
+        conversationId: input.conversationId,
+        inboundMessageId: messageId,
+        source: "client_replied",
+      });
+      if (rRes.reactivated) {
+        console.info("[webhook][early-inbound-persist][tag-reactivated]", {
+          conversationId: input.conversationId,
+          previous_tag_id: rRes.previous_tag_id,
+        });
+      }
+    } catch (e) {
+      console.warn("[webhook][early-inbound-persist][tag-reactivate-failed]", {
+        conversationId: input.conversationId,
+        err: (e as { message?: string }).message,
+      });
+    }
   }
 
   return isDuplicate
