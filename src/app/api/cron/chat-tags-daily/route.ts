@@ -20,6 +20,9 @@ import {
  *             (si se omite, recorre los 5 buckets en orden, respetando hard cap diario)
  *   - apply: 'true' | 'false' (default 'false' → 100% READ-ONLY, dry-run)
  *   - max_batch: integer 1..500 (default 100; topes por bucket más abajo)
+ *   - min_days_idle: integer 1..90 (default 7) — días mínimos sin actividad para
+ *     considerar candidata. Cuando el cron es diario, conviene bajarlo a 4 para
+ *     drenar conversaciones de hace varios días sin demorar más de la cuenta.
  *
  * Hard cap diario: 500 conversaciones aplicadas en total por invocación. Si se
  * supera, se corta y se devuelve `hard_cap_hit=true`.
@@ -113,6 +116,13 @@ export async function GET(request: NextRequest) {
     const maxBatchRaw = parseInt(url.searchParams.get("max_batch") ?? "100", 10);
     const maxBatchRequested = Math.min(500, Math.max(1, Number.isFinite(maxBatchRaw) ? maxBatchRaw : 100));
 
+    // min_days_idle: clamp 1..90, default 7. Si el cron pasa explícito (p. ej.
+    // ?min_days_idle=4) se respeta. Se reenvía al runner como `minDaysIdle`.
+    const minDaysIdleRaw = parseInt(url.searchParams.get("min_days_idle") ?? "", 10);
+    const minDaysIdle = Number.isFinite(minDaysIdleRaw)
+      ? Math.min(90, Math.max(1, Math.trunc(minDaysIdleRaw)))
+      : 7;
+
     const bucketsToRun: BucketCode[] =
       bucketParam.length > 0
         ? isValidBucket(bucketParam)
@@ -143,6 +153,7 @@ export async function GET(request: NextRequest) {
         bucket,
         maxBatch,
         apply,
+        minDaysIdle,
       });
       results.push(r);
       if (apply) totalApplied += r.applied_count;
@@ -157,6 +168,7 @@ export async function GET(request: NextRequest) {
       schema,
       empresa_id: empresaId,
       apply,
+      min_days_idle: minDaysIdle,
       hard_cap_daily: DAILY_HARD_CAP,
       total_applied: totalApplied,
       hard_cap_hit: hardCapHit,
