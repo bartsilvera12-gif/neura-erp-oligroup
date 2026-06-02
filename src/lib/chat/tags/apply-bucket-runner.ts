@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { quoteSchemaTable } from "@/lib/supabase/chat-pg-pool";
 import { assertAllowedChatDataSchema } from "@/lib/supabase/chat-data-schema";
+import { isUnsafeBucket } from "@/lib/chat/tags/phone-purchase-guard";
 
 /**
  * Etiquetas FASE 4A — runner por buckets.
@@ -46,7 +47,7 @@ const BUCKET_TO_CATEGORY: Record<BucketCode, string> = {
   no_compro: "no_purchase",
 };
 
-const GUARDS_VERSION = "triple7-fase4a-v1";
+const GUARDS_VERSION = "triple7-fase4a-v2-phone-guard";
 
 export type BucketRunInput = {
   pool: Pool;
@@ -104,6 +105,40 @@ export async function runBucketApply(input: BucketRunInput): Promise<BucketRunRe
   const rulesT = quoteSchemaTable(schema, "chat_conversation_tag_rules");
   const histT = quoteSchemaTable(schema, "chat_conversation_tag_history");
   const msgsT = quoteSchemaTable(schema, "chat_messages");
+  const contactsT = quoteSchemaTable(schema, "chat_contacts");
+  const entradasT = quoteSchemaTable(schema, "sorteo_entradas");
+
+  /**
+   * Buckets inseguros: no_compro / datos_incompletos / comprobante_pendiente
+   * NUNCA pueden aplicarse a una conv cuyo phone tiene compra global. Este
+   * blindaje opera por phone_normalized — la causa raíz del incidente de Papu.
+   */
+  const bucketIsUnsafe = isUnsafeBucket(bucket);
+
+  /** Fragmento SQL que indica "phone del contacto NO está en compradores globales". */
+  const phoneGuardCte = bucketIsUnsafe
+    ? `
+      WITH purchaser_phones AS (
+        SELECT DISTINCT ct.phone_normalized AS phone
+          FROM ${entradasT} e
+          JOIN ${convT} cc ON cc.id = COALESCE(e.chat_conversation_id, e.conversacion_id)
+          JOIN ${contactsT} ct ON ct.id = cc.contact_id
+         WHERE e.empresa_id = $1::uuid
+           AND e.estado_pago <> 'rechazado'
+           AND ct.phone_normalized IS NOT NULL
+           AND ct.phone_normalized <> ''
+      )`
+    : "";
+
+  /** Cláusula `AND` extra para excluir conv cuyo phone esté en purchaser_phones. */
+  const phoneGuardFilter = bucketIsUnsafe
+    ? `AND NOT EXISTS (
+        SELECT 1
+          FROM ${contactsT} ct_g
+          JOIN purchaser_phones pp ON pp.phone = ct_g.phone_normalized
+         WHERE ct_g.id = c.contact_id
+       )`
+    : "";
 
   // Resolver tag_id / rule_id del bucket
   const tagQ = await input.pool.query<{ id: string }>(
@@ -125,7 +160,7 @@ export async function runBucketApply(input: BucketRunInput): Promise<BucketRunRe
     reasonsSkipped[reason] = (reasonsSkipped[reason] ?? 0) + 1;
   }
 
-  // SELECT base (CON GUARDS estructurales + clasificación)
+  // SELECT base (CON GUARDS estructurales + clasificación + phone-level guard si aplica)
   const baseQ = await input.pool.query<{
     id: string;
     last_message_at: string | null;
@@ -135,7 +170,8 @@ export async function runBucketApply(input: BucketRunInput): Promise<BucketRunRe
     category: string;
   }>(
     `
-    WITH base AS (
+    ${phoneGuardCte ? phoneGuardCte + "," : "WITH"}
+    base AS (
       SELECT c.id, c.last_message_at, c.contact_id
         FROM ${convT} c
        WHERE c.empresa_id = $1::uuid
@@ -146,6 +182,7 @@ export async function runBucketApply(input: BucketRunInput): Promise<BucketRunRe
          AND c.current_tag_id IS NULL
          AND c.last_message_at IS NOT NULL
          AND c.last_message_at < now() - ($2::int * interval '1 day')
+         ${phoneGuardFilter}
        ORDER BY c.last_message_at ASC
        LIMIT $3 * 4   -- sobre-traemos para descartar los que no cumplen clasificación
     ),
@@ -236,6 +273,24 @@ export async function runBucketApply(input: BucketRunInput): Promise<BucketRunRe
     await client.query("SET LOCAL statement_timeout = '60s'");
 
     // UPDATE conversaciones — re-verifica TODOS los guards in-line, atómico.
+    // Para buckets inseguros además re-aplica el anti-join contra compradores
+    // globales en la propia transacción (defensa en profundidad: nuevas compras
+    // entre SELECT y UPDATE quedan excluidas).
+    const updateGuardClause = bucketIsUnsafe
+      ? `AND NOT EXISTS (
+          SELECT 1
+            FROM ${entradasT} eg
+            JOIN ${convT} cg ON cg.id = COALESCE(eg.chat_conversation_id, eg.conversacion_id)
+            JOIN ${contactsT} ctg ON ctg.id = cg.contact_id
+            JOIN ${contactsT} ctc ON ctc.id = ${convT}.contact_id
+           WHERE eg.empresa_id = $1::uuid
+             AND eg.estado_pago <> 'rechazado'
+             AND ctg.phone_normalized IS NOT NULL
+             AND ctg.phone_normalized <> ''
+             AND ctg.phone_normalized = ctc.phone_normalized
+        )`
+      : "";
+
     const upd = await client.query<{ id: string }>(
       `UPDATE ${convT}
           SET current_tag_id        = $3::uuid,
@@ -252,6 +307,7 @@ export async function runBucketApply(input: BucketRunInput): Promise<BucketRunRe
           AND COALESCE(hidden_by_tag, false) = false
           AND current_tag_id IS NULL
           AND last_message_at < now() - ($5::int * interval '1 day')
+          ${updateGuardClause}
         RETURNING id::text AS id`,
       [empresaId, ids, tagId, ruleId, minDaysIdle]
     );
