@@ -18,13 +18,22 @@ function publicTicketAssetUrl(storagePath: string): string {
   return `${base}/storage/v1/object/public/${SORTEO_TICKET_ASSETS_BUCKET}/${seg}`;
 }
 
+/**
+ * Construye el payload de `ticket_image_config` respetando el `design_mode`
+ * de `base`. Sigue auto por default si no viene set. Antes hardcodeaba
+ * `custom_template` y forzaba a todo sorteo a depender de plantilla subida —
+ * ahora el modo automático con logo es la opción primaria.
+ */
 function buildTicketImagePayload(
   base: Record<string, unknown>,
   text: { caption: string; stub: string }
 ): Record<string, unknown> {
+  const incomingMode = typeof base.design_mode === "string" ? base.design_mode : undefined;
+  const resolvedMode =
+    incomingMode === "custom_template" || incomingMode === "auto" ? incomingMode : "auto";
   const ticketMerged: Record<string, unknown> = {
     ...base,
-    design_mode: "custom_template",
+    design_mode: resolvedMode,
     showClienteNombre: true,
     showDocumento: true,
     showTelefono: true,
@@ -113,6 +122,20 @@ export default function EditarSorteoPage() {
 
   const templateInputRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * Modo de diseño del ticket. `auto` = SVG dinámico con logo subido (recomendado).
+   * `custom_template` = PNG completo (modo avanzado, requiere diseñar todo el ticket).
+   * Se inicializa desde `ticket_image_config.design_mode` y default es `auto`.
+   */
+  const [designMode, setDesignMode] = useState<"auto" | "custom_template">("auto");
+
+  /** Logo asset uploader state. */
+  const [logoPickName, setLogoPickName] = useState<string | null>(null);
+  const [logoObjectUrl, setLogoObjectUrl] = useState<string | null>(null);
+  const [logoPhase, setLogoPhase] = useState<AssetPhase>("idle");
+  const [logoMsg, setLogoMsg] = useState<string | null>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
+
   const textFields = useCallback(
     () => ({
       caption: ticketCaption,
@@ -179,6 +202,8 @@ export default function EditarSorteoPage() {
         );
         setTicketCaption(typeof tic.caption === "string" ? tic.caption : "");
         setTicketStub(typeof tic.ticket_image_only_stub === "string" ? tic.ticket_image_only_stub : "");
+        // Modo de diseño: respetar lo guardado en DB; si no hay nada, default `auto`.
+        setDesignMode(tic.design_mode === "custom_template" ? "custom_template" : "auto");
         setCouponNumberingEnabled(Boolean(s.coupon_numbering_enabled));
         setCouponStart(
           s.coupon_number_start != null && Number.isFinite(Number(s.coupon_number_start))
@@ -225,6 +250,12 @@ export default function EditarSorteoPage() {
       if (templateObjectUrl) URL.revokeObjectURL(templateObjectUrl);
     };
   }, [templateObjectUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
+    };
+  }, [logoObjectUrl]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -378,6 +409,7 @@ export default function EditarSorteoPage() {
       }
       const nextBase = {
         ...ticketCfgRef.current,
+        // Subir template implica modo custom_template (avanzado).
         design_mode: "custom_template" as const,
         custom_template_storage_bucket: bucket,
         custom_template_storage_path: path,
@@ -386,6 +418,7 @@ export default function EditarSorteoPage() {
         custom_template_original_filename: f.name,
       };
       await persistTicketConfig(nextBase);
+      setDesignMode("custom_template");
       URL.revokeObjectURL(ou);
       setTemplateObjectUrl(null);
       setTemplatePickName(null);
@@ -395,6 +428,98 @@ export default function EditarSorteoPage() {
     } catch (e) {
       setTemplatePhase("error");
       setTemplateMsg(e instanceof Error ? e.message : "Error al subir");
+    }
+  }
+
+  /**
+   * Sube el LOGO (kind=logo) y guarda en `ticket_image_config` las rutas
+   * (`logo_storage_bucket`, `logo_storage_path`) + `design_mode=auto`. El
+   * render automático (`renderTicketPngUnified`) usa el logo cuando no hay
+   * template — recomendado para Triple 7 que sólo quiere subir logo.
+   */
+  async function onLogoFile(files: FileList | null) {
+    const f = files?.[0];
+    if (!f || !id) return;
+    setLogoMsg(null);
+    setLogoPhase("idle");
+    const err = validateAssetFile(f);
+    if (err) {
+      setLogoPhase("error");
+      setLogoMsg(err);
+      return;
+    }
+    if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
+    const ou = URL.createObjectURL(f);
+    setLogoObjectUrl(ou);
+    setLogoPickName(f.name);
+    setLogoPhase("uploading");
+
+    const fd = new FormData();
+    fd.set("sorteo_id", id);
+    fd.set("kind", "logo");
+    fd.set("file", f);
+
+    try {
+      const res = await fetchWithSupabaseSession("/api/sorteos/ticket-assets", {
+        method: "POST",
+        body: fd,
+      });
+      const raw = await res.text();
+      if (!res.ok) {
+        setLogoPhase("error");
+        setLogoMsg(raw || `Error ${res.status}`);
+        return;
+      }
+      const json = JSON.parse(raw) as { success?: boolean; data?: { bucket?: string; path?: string } };
+      const bucket = json.data?.bucket;
+      const path = json.data?.path;
+      if (!json.success || !bucket || !path) {
+        setLogoPhase("error");
+        setLogoMsg("Respuesta inválida del servidor.");
+        return;
+      }
+      const nextBase = {
+        ...ticketCfgRef.current,
+        design_mode: "auto" as const,
+        logo_storage_bucket: bucket,
+        logo_storage_path: path,
+        showLogo: true,
+      };
+      await persistTicketConfig(nextBase);
+      setDesignMode("auto");
+      setLogoPhase("ok");
+      setLogoMsg(null);
+    } catch (e) {
+      setLogoPhase("error");
+      setLogoMsg(e instanceof Error ? e.message : "Error al subir");
+    }
+  }
+
+  async function removeLogo() {
+    if (!id) return;
+    setLogoMsg(null);
+    try {
+      const res = await fetchWithSupabaseSession(
+        `/api/sorteos/ticket-assets?sorteo_id=${encodeURIComponent(id)}&kind=logo`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        setLogoPhase("error");
+        setLogoMsg(await res.text());
+        return;
+      }
+      const next = { ...ticketCfgRef.current };
+      delete next.logo_storage_bucket;
+      delete next.logo_storage_path;
+      await persistTicketConfig(next);
+      if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
+      setLogoObjectUrl(null);
+      setLogoPickName(null);
+      setLogoPhase("idle");
+      setLogoMsg(null);
+    } catch (e) {
+      setLogoPhase("error");
+      setLogoMsg(e instanceof Error ? e.message : "Error");
     }
   }
 
@@ -438,6 +563,18 @@ export default function EditarSorteoPage() {
       : legacyTemplateUrl;
 
   const hasTemplateOnServer = Boolean(templatePathStored || legacyTemplateUrl);
+
+  /** Datos del logo persistido para previsualizar y decidir UX. */
+  const logoPathStored =
+    typeof ticketImageConfigBase.logo_storage_path === "string"
+      ? ticketImageConfigBase.logo_storage_path
+      : null;
+  const logoPreviewSrc = logoObjectUrl
+    ? logoObjectUrl
+    : logoPathStored
+      ? publicTicketAssetUrl(logoPathStored)
+      : null;
+  const hasLogoOnServer = Boolean(logoPathStored);
 
   const templateW =
     typeof ticketImageConfigBase.custom_template_width === "number"
@@ -702,6 +839,115 @@ export default function EditarSorteoPage() {
             </select>
           </div>
 
+          {/* Selector de modo de diseño del ticket */}
+          <div className="rounded-xl border border-violet-200 bg-white p-4 space-y-2">
+            <label className="block text-xs font-medium text-slate-600 mb-1">Modo de diseño del ticket</label>
+            <select
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white"
+              value={designMode}
+              onChange={(e) => {
+                const next = e.target.value === "custom_template" ? "custom_template" : "auto";
+                setDesignMode(next);
+                void persistTicketConfig({ ...ticketCfgRef.current, design_mode: next });
+              }}
+            >
+              <option value="auto">Diseño automático con logo (recomendado)</option>
+              <option value="custom_template">Plantilla personalizada (avanzado)</option>
+            </select>
+            <p className="text-xs text-slate-600">
+              {designMode === "auto"
+                ? "El ERP genera el ticket usando tu logo y los datos del comprador. Solo subí el logo."
+                : "Subí una imagen base completa con el diseño del ticket. El ERP completa los datos encima."}
+            </p>
+          </div>
+
+          {/* Uploader de LOGO — visible en modo auto */}
+          {designMode === "auto" && (
+            <div className="rounded-xl border-2 border-violet-400/80 bg-white p-5 space-y-4">
+              <div>
+                <p className="text-base font-semibold text-slate-900">Subir logo del cliente</p>
+                <p className="text-sm text-slate-600 mt-2">
+                  Subí solo el logo. El ERP arma el ticket con el diseño automático y completa los datos
+                  del comprador y sus cupones.
+                </p>
+                <ul className="mt-2 text-xs text-slate-600 list-disc list-inside space-y-0.5">
+                  <li>PNG, JPG o WebP · máximo {MAX_ASSET_BYTES / (1024 * 1024)} MB</li>
+                  <li>Recomendado: fondo transparente (PNG) y proporciones cuadradas o rectangulares</li>
+                </ul>
+              </div>
+
+              <input
+                ref={logoInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="sr-only"
+                onChange={(e) => {
+                  void onLogoFile(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+
+              <div className="flex flex-wrap items-center gap-2">
+                {!hasLogoOnServer && (
+                  <button
+                    type="button"
+                    onClick={() => logoInputRef.current?.click()}
+                    disabled={logoPhase === "uploading"}
+                    className="inline-flex items-center rounded-lg bg-violet-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-violet-800 disabled:opacity-50"
+                  >
+                    Seleccionar logo
+                  </button>
+                )}
+                {hasLogoOnServer && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => logoInputRef.current?.click()}
+                      disabled={logoPhase === "uploading"}
+                      className="inline-flex items-center rounded-lg bg-violet-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-violet-800 disabled:opacity-50"
+                    >
+                      Cambiar logo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void removeLogo()}
+                      className="inline-flex items-center rounded-lg border border-red-200 bg-white px-4 py-2.5 text-sm font-medium text-red-700 hover:bg-red-50"
+                    >
+                      Quitar logo
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {logoPhase === "uploading" && (
+                <p className="text-sm font-medium text-violet-800">Subiendo logo…</p>
+              )}
+              {logoPhase === "error" && logoMsg && (
+                <p className="text-sm text-red-700" role="alert">{logoMsg}</p>
+              )}
+              {hasLogoOnServer && logoPhase !== "uploading" && logoPhase !== "error" && (
+                <p className="text-sm font-medium text-emerald-800">Logo cargado correctamente.</p>
+              )}
+              {logoPickName && (
+                <p className="text-sm text-slate-700">
+                  Archivo: <span className="font-medium break-all">{logoPickName}</span>
+                </p>
+              )}
+              {logoPreviewSrc && (
+                <div className="mt-2 inline-block rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={logoPreviewSrc}
+                    alt="Preview del logo"
+                    className="block max-h-32 max-w-[200px] object-contain"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Uploader de TEMPLATE — visible en modo custom_template (avanzado) */}
+          {designMode === "custom_template" && (
           <div className="rounded-xl border-2 border-violet-400/80 bg-white p-5 space-y-4">
             <div>
               <p className="text-base font-semibold text-slate-900">Subir imagen base del comprobante</p>
@@ -823,6 +1069,7 @@ export default function EditarSorteoPage() {
               </div>
             </div>
           </div>
+          )}
 
           <div className="space-y-3 pt-1 border-t border-violet-200/80">
             <div>
