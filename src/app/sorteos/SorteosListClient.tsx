@@ -190,15 +190,43 @@ function NavTabs() {
 
 // ── Componente principal ──────────────────────────────────────────────────────
 
-export default function SorteosListClient({ ventasKpis }: { ventasKpis: SorteosVentasKpis }) {
+export default function SorteosListClient({ ventasKpis: ventasKpisInitial }: { ventasKpis: SorteosVentasKpis }) {
   const [rows, setRows] = useState<Sorteo[]>([]);
   const [cargando, setCargando] = useState(true);
+
+  /**
+   * KPIs: la página `/sorteos` ya no los calcula server-side para no bloquear
+   * el SSR (evita 503 en `?_rsc=` cuando Coolify está bajo carga). El cliente
+   * los pide via `/api/sorteos/kpis` apenas monta. Mientras llegan, se muestra
+   * un placeholder neutral ("…").
+   */
+  const [ventasKpis, setVentasKpis] = useState<SorteosVentasKpis>(ventasKpisInitial);
+  const [kpisLoading, setKpisLoading] = useState(true);
 
   useEffect(() => {
     getSorteos()
       .then(setRows)
       .catch(() => setRows([]))
       .finally(() => setCargando(false));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/sorteos/kpis", { cache: "no-store" });
+        const json = (await res.json()) as { success?: boolean; data?: SorteosVentasKpis };
+        if (cancelled) return;
+        if (json?.data) setVentasKpis(json.data);
+      } catch {
+        /* sin sesión / red: dejamos los valores iniciales en cero */
+      } finally {
+        if (!cancelled) setKpisLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -229,17 +257,19 @@ export default function SorteosListClient({ ventasKpis }: { ventasKpis: SorteosV
 
       <NavTabs />
 
-      {/* KPIs — métricas del sorteo ACTIVO (no por mes calendario). */}
+      {/* KPIs — métricas del sorteo ACTIVO (no por mes calendario).
+          Mientras se cargan via /api/sorteos/kpis, mostramos "…" como placeholder
+          para no bloquear el render del resto de la pantalla. */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Boletos hoy"
-          value={ventasKpis.boletosHoy.toLocaleString("es-PY")}
+          value={kpisLoading ? "…" : ventasKpis.boletosHoy.toLocaleString("es-PY")}
           sub="Vendidos hoy"
           icon={<IconTicket />}
         />
         <KpiCard
           label="Boletos sorteo"
-          value={ventasKpis.boletosSorteo.toLocaleString("es-PY")}
+          value={kpisLoading ? "…" : ventasKpis.boletosSorteo.toLocaleString("es-PY")}
           sub={
             ventasKpis.sorteoActivoNombre
               ? `Desde el inicio · ${ventasKpis.sorteoActivoNombre}`
@@ -249,13 +279,13 @@ export default function SorteosListClient({ ventasKpis }: { ventasKpis: SorteosV
         />
         <KpiCard
           label="Monto hoy"
-          value={formatGs(ventasKpis.montoHoy)}
+          value={kpisLoading ? "…" : formatGs(ventasKpis.montoHoy)}
           sub="Ingresos de hoy"
           icon={<IconWallet />}
         />
         <KpiCard
           label="Monto sorteo"
-          value={formatGs(ventasKpis.montoSorteo)}
+          value={kpisLoading ? "…" : formatGs(ventasKpis.montoSorteo)}
           sub={
             ventasKpis.sorteoActivoNombre
               ? `Desde el inicio · ${ventasKpis.sorteoActivoNombre}`
