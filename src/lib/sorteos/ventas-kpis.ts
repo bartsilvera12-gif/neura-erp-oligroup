@@ -22,9 +22,13 @@ import { assertAllowedChatDataSchema } from "@/lib/supabase/chat-data-schema";
  */
 export type SorteosVentasKpis = {
   boletosHoy: number;
-  boletosMes: number;
+  /** Boletos acumulados del sorteo activo desde su `created_at`. */
+  boletosSorteo: number;
   montoHoy: number;
-  montoMes: number;
+  /** Monto acumulado del sorteo activo desde su `created_at`. */
+  montoSorteo: number;
+  /** Nombre del sorteo activo cuyos números se muestran (puede ser null si no hay activo). */
+  sorteoActivoNombre: string | null;
 };
 
 const LOG_ERR = "[sorteos][dashboard-summary][error]";
@@ -128,9 +132,10 @@ async function logDashboardDebug(
     cupones_hoy_count: cuponesHoy,
     cupones_mes_count: cuponesMes,
     monto_hoy: kpis.montoHoy,
-    monto_mes: kpis.montoMes,
+    monto_sorteo: kpis.montoSorteo,
     boletos_hoy: kpis.boletosHoy,
-    boletos_mes: kpis.boletosMes,
+    boletos_sorteo: kpis.boletosSorteo,
+    sorteo_activo_nombre: kpis.sorteoActivoNombre,
   });
 }
 
@@ -182,8 +187,83 @@ async function fetchKpiWindowFromPg(
   return { boletos, monto };
 }
 
+/**
+ * Resuelve el sorteo activo cuyas métricas se muestran en el dashboard.
+ * - estado IN ('activo','pausado')
+ * - empresa actual
+ * - si hay >1 activo, se elige el MÁS RECIENTE por `created_at` (criterio único y determinístico)
+ * Devuelve null si no hay ninguno (cards en cero).
+ */
+async function resolveSorteoActivoFromPg(
+  pool: Pool,
+  schema: string,
+  empresaId: string
+): Promise<{ id: string; nombre: string; createdAtIso: string } | null> {
+  const sch = assertAllowedChatDataSchema(schema);
+  const tsor = quoteSchemaTable(sch, "sorteos");
+  const r = await pool.query(
+    `SELECT id::text AS id, nombre, created_at
+       FROM ${tsor}
+      WHERE empresa_id = $1::uuid
+        AND estado IN ('activo','pausado')
+      ORDER BY created_at DESC NULLS LAST
+      LIMIT 1`,
+    [empresaId]
+  );
+  if ((r.rowCount ?? 0) === 0) return null;
+  const row = r.rows[0] as { id: string; nombre: string; created_at: Date | string };
+  const createdAtIso = row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at);
+  return { id: row.id, nombre: String(row.nombre ?? "").trim(), createdAtIso };
+}
+
+/**
+ * Versión específica de la ventana acumulada del sorteo activo (desde sorteo.created_at hasta ahora).
+ * Reutiliza el path PG por consistencia.
+ */
+async function fetchKpiSorteoAcumuladoFromPg(
+  pool: Pool,
+  schema: string,
+  empresaId: string,
+  sorteoId: string,
+  sorteoCreatedAtIso: string
+): Promise<{ boletos: number; monto: number }> {
+  const sch = assertAllowedChatDataSchema(schema);
+  const tent = quoteSchemaTable(sch, "sorteo_entradas");
+  const tcup = quoteSchemaTable(sch, "sorteo_cupones");
+  const [bRes, mRes] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(c.id) AS boletos
+         FROM ${tcup} c
+         INNER JOIN ${tent} e ON e.id = c.entrada_id
+        WHERE e.empresa_id = $1::uuid
+          AND e.sorteo_id = $2::uuid
+          AND e.created_at >= $3::timestamptz
+          AND e.estado_pago <> 'rechazado'`,
+      [empresaId, sorteoId, sorteoCreatedAtIso]
+    ),
+    pool.query(
+      `SELECT COALESCE(SUM(e.monto_total), 0) AS monto
+         FROM ${tent} e
+        WHERE e.empresa_id = $1::uuid
+          AND e.sorteo_id = $2::uuid
+          AND e.created_at >= $3::timestamptz
+          AND e.estado_pago <> 'rechazado'`,
+      [empresaId, sorteoId, sorteoCreatedAtIso]
+    ),
+  ]);
+  const bRow = bRes.rows?.[0] as PgKpiRow | undefined;
+  const mRow = mRes.rows?.[0] as PgKpiRow | undefined;
+  return { boletos: Number(bRow?.boletos) || 0, monto: Number(mRow?.monto) || 0 };
+}
+
 export async function getSorteosVentasKpis(): Promise<SorteosVentasKpis> {
-  const empty: SorteosVentasKpis = { boletosHoy: 0, boletosMes: 0, montoHoy: 0, montoMes: 0 };
+  const empty: SorteosVentasKpis = {
+    boletosHoy: 0,
+    boletosSorteo: 0,
+    montoHoy: 0,
+    montoSorteo: 0,
+    sorteoActivoNombre: null,
+  };
 
   /** Misma resolución que `/api/sorteos`: `auth_user_id`, variantes de email, `ilike` (no solo `eq` email). */
   const auth = await getUserAndEmpresa(null);
@@ -195,20 +275,34 @@ export async function getSorteosVentasKpis(): Promise<SorteosVentasKpis> {
   const schema = await fetchDataSchemaForEmpresaId(empresaId);
 
   const day = asuncionDayBoundsUtc();
+  // El "mes" deja de ser ventana de KPI productivo, pero seguimos calculándolo
+  // para el log de debug (logDashboardDebug) que ya consume ese arg.
   const month = asuncionMonthBoundsUtc();
 
   const pool = getChatPostgresPool();
   if (pool) {
     try {
-      const [d, m] = await Promise.all([
+      const sorteoActivo = await resolveSorteoActivoFromPg(pool, schema, empresaId);
+      if (!sorteoActivo) {
+        // Sin sorteo activo/pausado: cards en cero pero sin error.
+        return empty;
+      }
+      const [d, acum] = await Promise.all([
         fetchKpiWindowFromPg(pool, schema, empresaId, day.start, day.end),
-        fetchKpiWindowFromPg(pool, schema, empresaId, month.start, month.end),
+        fetchKpiSorteoAcumuladoFromPg(
+          pool,
+          schema,
+          empresaId,
+          sorteoActivo.id,
+          sorteoActivo.createdAtIso
+        ),
       ]);
       const out: SorteosVentasKpis = {
         boletosHoy: d.boletos,
         montoHoy: d.monto,
-        boletosMes: m.boletos,
-        montoMes: m.monto,
+        boletosSorteo: acum.boletos,
+        montoSorteo: acum.monto,
+        sorteoActivoNombre: sorteoActivo.nombre || null,
       };
       void logDashboardDebug(pool, schema, empresaId, day, month, "pg", out);
       return out;
@@ -220,55 +314,59 @@ export async function getSorteosVentasKpis(): Promise<SorteosVentasKpis> {
   try {
     const supabase = await getChatServiceClientForEmpresa(empresaId);
 
-    // KPIs operativos: filtrar entradas a las que pertenecen a sorteos vigentes
-    // (activo/pausado). Se resuelve primero la lista de IDs y luego se aplica
-    // como `in('sorteo_id', ...)` para no depender de FK embebida en PostgREST.
+    // KPIs operativos: filtrar entradas a las que pertenecen al sorteo ACTIVO
+    // (más reciente por created_at si hay varios). El "mes" se reemplaza por
+    // "desde sorteo.created_at".
     const activeSorteosRes = await supabase
       .from("sorteos")
-      .select("id")
+      .select("id, nombre, created_at")
       .eq("empresa_id", empresaId)
-      .in("estado", ["activo", "pausado"]);
+      .in("estado", ["activo", "pausado"])
+      .order("created_at", { ascending: false })
+      .limit(1);
 
     if (activeSorteosRes.error) {
       logDashboardError(empresaId, schema, activeSorteosRes.error);
       return empty;
     }
 
-    const activeIds = (activeSorteosRes.data ?? []).map((r) => r.id as string);
-    if (activeIds.length === 0) {
+    const activo = (activeSorteosRes.data ?? [])[0] as
+      | { id: string; nombre: string; created_at: string }
+      | undefined;
+    if (!activo) {
       void logDashboardDebug(pool, schema, empresaId, day, month, "postgrest", empty);
       return empty;
     }
 
-    const [dayRes, monthRes] = await Promise.all([
+    const [dayRes, sorteoRes] = await Promise.all([
       supabase
         .from("sorteo_entradas")
         .select("cantidad_boletos, monto_total, estado_pago")
         .eq("empresa_id", empresaId)
-        .in("sorteo_id", activeIds)
+        .eq("sorteo_id", activo.id)
         .gte("created_at", day.start)
         .lte("created_at", day.end),
       supabase
         .from("sorteo_entradas")
         .select("cantidad_boletos, monto_total, estado_pago")
         .eq("empresa_id", empresaId)
-        .in("sorteo_id", activeIds)
-        .gte("created_at", month.start)
-        .lte("created_at", month.end),
+        .eq("sorteo_id", activo.id)
+        .gte("created_at", activo.created_at),
     ]);
 
-    if (dayRes.error || monthRes.error) {
-      logDashboardError(empresaId, schema, dayRes.error ?? monthRes.error);
+    if (dayRes.error || sorteoRes.error) {
+      logDashboardError(empresaId, schema, dayRes.error ?? sorteoRes.error);
       return empty;
     }
 
     const sD = sumRows(dayRes.data ?? []);
-    const sM = sumRows(monthRes.data ?? []);
+    const sAcum = sumRows(sorteoRes.data ?? []);
     const out: SorteosVentasKpis = {
       boletosHoy: sD.boletos,
       montoHoy: sD.monto,
-      boletosMes: sM.boletos,
-      montoMes: sM.monto,
+      boletosSorteo: sAcum.boletos,
+      montoSorteo: sAcum.monto,
+      sorteoActivoNombre: String(activo.nombre ?? "").trim() || null,
     };
     void logDashboardDebug(pool, schema, empresaId, day, month, "postgrest", out);
     return out;

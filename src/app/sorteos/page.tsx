@@ -8,9 +8,10 @@ export const revalidate = 0;
 export default async function SorteosPage() {
   let ventasKpis = {
     boletosHoy: 0,
-    boletosMes: 0,
+    boletosSorteo: 0,
     montoHoy: 0,
-    montoMes: 0,
+    montoSorteo: 0,
+    sorteoActivoNombre: null as string | null,
   };
   try {
     ventasKpis = await getSorteosVentasKpis();

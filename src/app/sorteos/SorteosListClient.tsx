@@ -229,7 +229,7 @@ export default function SorteosListClient({ ventasKpis }: { ventasKpis: SorteosV
 
       <NavTabs />
 
-      {/* KPIs */}
+      {/* KPIs — métricas del sorteo ACTIVO (no por mes calendario). */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           label="Boletos hoy"
@@ -238,9 +238,13 @@ export default function SorteosListClient({ ventasKpis }: { ventasKpis: SorteosV
           icon={<IconTicket />}
         />
         <KpiCard
-          label="Boletos mes"
-          value={ventasKpis.boletosMes.toLocaleString("es-PY")}
-          sub="Vendidos este mes"
+          label="Boletos sorteo"
+          value={ventasKpis.boletosSorteo.toLocaleString("es-PY")}
+          sub={
+            ventasKpis.sorteoActivoNombre
+              ? `Desde el inicio · ${ventasKpis.sorteoActivoNombre}`
+              : "Desde el inicio del sorteo activo"
+          }
           icon={<IconCalendar />}
         />
         <KpiCard
@@ -250,9 +254,13 @@ export default function SorteosListClient({ ventasKpis }: { ventasKpis: SorteosV
           icon={<IconWallet />}
         />
         <KpiCard
-          label="Monto mes"
-          value={formatGs(ventasKpis.montoMes)}
-          sub="Ingresos del mes"
+          label="Monto sorteo"
+          value={formatGs(ventasKpis.montoSorteo)}
+          sub={
+            ventasKpis.sorteoActivoNombre
+              ? `Desde el inicio · ${ventasKpis.sorteoActivoNombre}`
+              : "Desde el inicio del sorteo activo"
+          }
           icon={<IconCoins />}
           accent="featured"
         />
