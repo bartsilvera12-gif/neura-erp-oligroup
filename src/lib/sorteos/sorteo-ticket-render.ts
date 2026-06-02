@@ -111,14 +111,23 @@ function cuponesAutoSvg(
 }
 
 /**
- * Modo automático: layout vertical 1080×1350, logo destacado, datos en “cards”, cupón protagonista.
+ * Modo automático: layout vertical 1080×1350.
+ *
+ * BANDS verticales (sin solapamiento):
+ *   [   0 … 320 ]  header  → logo (240×240) + "EMPRESA" pequeño + título grande
+ *   [ 340 … card ]  card de datos → labels + values bien espaciados
+ *   [ post-card  ]  "CUPONES" label + número(s) grande(s)
+ *   [ HA-100 …  ]  footer  → fecha + leyenda legal opcional
+ *
+ * El bug histórico: `cardTop = yHeader + 28` ubicaba la card ARRIBA del título.
+ * Ahora hay 3 bandas con margenes calculados y la card empieza después del título.
  */
 export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
   const cfg = input.config;
-  const bg = (cfg.backgroundColor ?? "#f1f5f9").trim();
+  const bg = (cfg.backgroundColor ?? "#f8fafc").trim();
   const primary = (cfg.primaryColor ?? "#0f172a").trim();
   const secondary = (cfg.secondaryColor ?? "#64748b").trim();
-  const accent = (cfg.primaryColor ?? "#4f46e5").trim();
+  const accent = (cfg.primaryColor ?? "#4FAEB2").trim();
   const title = (cfg.title ?? "Comprobante de participación").trim();
   const footer = (cfg.legalFooter ?? "").trim();
 
@@ -130,20 +139,40 @@ export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
   const showCup = cfg.showCupones !== false;
   const showSorteoNom = cfg.showSorteoNombre !== false;
 
+  // ============= BANDS =============
+  // Logo: cuadrado de 220px centrado, desde y=PAD
+  const LOGO_SIZE = 220;
+  const logoY = PAD;
+  const logoBottom = showLogo ? logoY + LOGO_SIZE : PAD;
+  // "EMPRESA" sub-tag, espacio chico tras el logo
+  const empresaTextY = logoBottom + 44;
+  // Título principal, debajo del empresa-tag
+  const titleY = empresaTextY + 56;
+  // Card de datos, DESPUÉS del título con margen claro
+  const CARD_TOP_MARGIN = 56;
+  const cardTop = titleY + CARD_TOP_MARGIN;
+  const cardW = WA - PAD * 2;
+  const cardX = PAD;
+  const CARD_INNER_PADX = 56;
+  const ROW_HEIGHT = 92;
+  const ROW_LABEL_TO_VALUE_GAP = 36;
+  const CARD_TOP_INNER_PAD = 56;
+  const CARD_BOTTOM_INNER_PAD = 40;
+
   let headerLogo = "";
   if (showLogo) {
+    const logoX = (WA - LOGO_SIZE) / 2;
     if (input.logoBytes && input.logoMime) {
       const href = dataUrlFromBuffer(input.logoBytes, input.logoMime);
-      /** Logo ancho arriba */
-      headerLogo = `<image href="${href}" x="${(WA - 200) / 2}" y="${PAD}" width="200" height="200" preserveAspectRatio="xMidYMid meet"/>`;
+      headerLogo = `<image href="${href}" x="${logoX}" y="${logoY}" width="${LOGO_SIZE}" height="${LOGO_SIZE}" preserveAspectRatio="xMidYMid meet"/>`;
     } else {
       const ini = initials(input.clienteNombre || input.empresaNombre);
-      headerLogo = `<rect x="${(WA - 200) / 2}" y="${PAD}" width="200" height="200" rx="24" fill="#e2e8f0"/>
+      headerLogo = `<rect x="${logoX}" y="${logoY}" width="${LOGO_SIZE}" height="${LOGO_SIZE}" rx="28" fill="#e2e8f0"/>
         ${svgTextAsPath({
           text: ini,
           x: WA / 2,
-          y: PAD + 120,
-          fontSize: 64,
+          y: logoY + LOGO_SIZE / 2 + 24,
+          fontSize: 72,
           weight: 800,
           fill: "#475569",
           textAnchor: "middle",
@@ -154,13 +183,8 @@ export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
   let bgPattern = "";
   if (input.backgroundBytes && input.backgroundMime) {
     const href = dataUrlFromBuffer(input.backgroundBytes, input.backgroundMime);
-    bgPattern = `<image href="${href}" x="0" y="0" width="${WA}" height="${HA}" preserveAspectRatio="xMidYMid slice" opacity="0.12"/>`;
+    bgPattern = `<image href="${href}" x="0" y="0" width="${WA}" height="${HA}" preserveAspectRatio="xMidYMid slice" opacity="0.10"/>`;
   }
-
-  const yHeader = showLogo ? PAD + 220 : PAD + 20;
-  const cardTop = yHeader + 28;
-  const cardW = WA - PAD * 2;
-  const cardX = PAD;
 
   const rows: { label: string; value: string }[] = [];
   if (showNombre && input.clienteNombre?.trim()) {
@@ -179,12 +203,17 @@ export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
     rows.push({ label: "Sorteo", value: input.sorteoNombre.trim() });
   }
 
-  let rowY = cardTop + 56;
+  // Card height: padding superior + rows + padding inferior
+  const cardContentH = rows.length * ROW_HEIGHT;
+  const cardH = CARD_TOP_INNER_PAD + cardContentH + CARD_BOTTOM_INNER_PAD;
+
+  // Render filas dentro de la card
+  let rowY = cardTop + CARD_TOP_INNER_PAD + 24; // baseline de la primera label
   const rowSvg = rows
     .map((r) => {
       const labelPath = svgTextAsPath({
-        text: r.label,
-        x: cardX + 36,
+        text: r.label.toUpperCase(),
+        x: cardX + CARD_INNER_PADX,
         y: rowY,
         fontSize: 22,
         weight: 600,
@@ -193,64 +222,71 @@ export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
       });
       const valuePath = svgTextAsPath({
         text: r.value,
-        x: cardX + 36,
-        y: rowY + 28,
-        fontSize: 30,
+        x: cardX + CARD_INNER_PADX,
+        y: rowY + ROW_LABEL_TO_VALUE_GAP,
+        fontSize: 32,
         weight: 700,
         fill: primary,
         textAnchor: "start",
       });
       const block = `${labelPath}\n${valuePath}`;
-      rowY += 78;
+      rowY += ROW_HEIGHT;
       return block;
     })
     .join("\n");
 
-  const cardH = Math.max(120 + rows.length * 78, 200);
-  const cupY = cardTop + cardH + 80;
+  // CUPONES debajo de la card
+  const CUP_TOP_MARGIN = 72;
+  const cupHeaderY = cardTop + cardH + CUP_TOP_MARGIN;
   const cupones = showCup ? input.cupones.filter((c) => String(c).trim()) : [];
   const cupSvg =
     cupones.length > 0
       ? `${svgTextAsPath({
           text: "CUPONES",
           x: WA / 2,
-          y: cupY,
+          y: cupHeaderY,
           fontSize: 26,
           weight: 700,
           fill: accent,
           textAnchor: "middle",
         })}
-  ${cuponesAutoSvg(cupones, cupY + 40, primary, secondary)}`
+${cuponesAutoSvg(cupones, cupHeaderY + 40, primary, secondary)}`
       : "";
+
+  // Línea decorativa bajo el título (separador visual)
+  const dividerY = titleY + 24;
+  const dividerW = 120;
+  const divider = `<rect x="${(WA - dividerW) / 2}" y="${dividerY}" width="${dividerW}" height="4" rx="2" fill="${accent}" opacity="0.85"/>`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${WA}" height="${HA}" viewBox="0 0 ${WA} ${HA}">
   <defs>
     <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-opacity="0.12"/>
+      <feDropShadow dx="0" dy="14" stdDeviation="22" flood-opacity="0.12"/>
     </filter>
   </defs>
   <rect width="${WA}" height="${HA}" fill="${bg}"/>
   ${bgPattern}
   ${headerLogo}
   ${svgTextAsPath({
-    text: input.empresaNombre,
+    text: (input.empresaNombre || "").toUpperCase(),
     x: WA / 2,
-    y: yHeader,
-    fontSize: 28,
-    weight: 700,
+    y: empresaTextY,
+    fontSize: 22,
+    weight: 600,
     fill: secondary,
     textAnchor: "middle",
   })}
   ${svgTextAsPath({
     text: title,
     x: WA / 2,
-    y: yHeader + 42,
-    fontSize: 40,
+    y: titleY,
+    fontSize: 42,
     weight: 800,
     fill: primary,
     textAnchor: "middle",
   })}
+  ${divider}
   <rect x="${cardX}" y="${cardTop}" width="${cardW}" height="${cardH}" rx="${CARD_RX}" fill="#ffffff" filter="url(#cardShadow)"/>
   ${rowSvg}
   ${cupSvg}
@@ -258,7 +294,7 @@ export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
     text: input.fechaHora,
     x: WA / 2,
     y: HA - PAD - (footer ? 56 : 28),
-    fontSize: 24,
+    fontSize: 22,
     weight: 400,
     fill: secondary,
     textAnchor: "middle",
@@ -269,7 +305,7 @@ export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
           text: footer,
           x: WA / 2,
           y: HA - PAD - 12,
-          fontSize: 20,
+          fontSize: 18,
           weight: 400,
           fill: secondary,
           textAnchor: "middle",
