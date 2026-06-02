@@ -577,12 +577,35 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
     });
 
     if (conversationId?.trim()) {
+      // Enriquecemos `raw_payload` con `image.link` apuntando al endpoint del ERP
+      // que regenera signed URLs a demanda (`/api/sorteos/tickets/:id/image`).
+      // Así el chat del ERP renderiza la imagen inline (parseOutgoingImageMessage
+      // lee `raw_payload.image.link`) sin acoplarse a la signed URL efímera que
+      // ya consumió Meta. NO cambia el envío a WhatsApp, solo el metadata que
+      // guardamos para el chat interno.
+      const rawBase =
+        typeof sendResult.raw === "object" && sendResult.raw !== null
+          ? (sendResult.raw as Record<string, unknown>)
+          : {};
+      const erpImageProxy = `/api/sorteos/tickets/${rowId}/image`;
+      const enrichedRaw: Record<string, unknown> = {
+        ...rawBase,
+        image: {
+          link: erpImageProxy,
+          caption: caption || undefined,
+        },
+        sorteo_ticket: {
+          delivery_id: rowId,
+          storage_bucket: "sorteo-tickets-generated",
+          storage_path: genPath,
+        },
+      };
       await persistOutgoingChatMessage(supabase, {
         conversation: { id: conversationId.trim(), empresa_id: empresaId },
         content: caption ? `Ticket imagen\n${caption}` : "Ticket imagen enviado",
         messageType: "image",
         waMessageId: waId,
-        raw: sendResult.raw ?? {},
+        raw: enrichedRaw,
         senderType: "system",
         automationSource: "sorteo_ticket",
       });
@@ -966,12 +989,32 @@ export async function resendSorteoTicketByDeliveryId(input: {
     })
     .eq("id", input.deliveryId);
 
+  // Mismo enriquecimiento que el envío automático: guardamos `image.link`
+  // apuntando al endpoint del ERP que regenera signed URLs a demanda, para
+  // que el chat del ERP renderice la imagen inline también en reenvíos.
+  const rawBase =
+    typeof sendResult.raw === "object" && sendResult.raw !== null
+      ? (sendResult.raw as Record<string, unknown>)
+      : {};
+  const erpImageProxy = `/api/sorteos/tickets/${input.deliveryId}/image`;
+  const enrichedRaw: Record<string, unknown> = {
+    ...rawBase,
+    image: {
+      link: erpImageProxy,
+      caption: caption || undefined,
+    },
+    sorteo_ticket: {
+      delivery_id: input.deliveryId,
+      storage_bucket: "sorteo-tickets-generated",
+      storage_path: storagePath,
+    },
+  };
   await persistOutgoingChatMessage(input.supabase, {
     conversation: { id: convId, empresa_id: input.empresaId },
     content: caption ? `Ticket imagen (reenvío)\n${caption}` : "Ticket imagen reenviado",
     messageType: "image",
     waMessageId: waId,
-    raw: sendResult.raw ?? {},
+    raw: enrichedRaw,
     senderType: "system",
     automationSource: "sorteo_ticket_resend",
   });
