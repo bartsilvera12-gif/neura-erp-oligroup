@@ -1,40 +1,58 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Search, X, RefreshCw, AlertTriangle, Filter } from "lucide-react";
 
 interface ByTagRow {
+  tag_id: string;
   tag_code: string;
   tag_label: string;
+  tag_color: string | null;
   n: number;
 }
 
-interface SnapshotRow {
-  history_id: string;
-  conversation_id: string;
-  contact_id: string | null;
-  tag_code: string;
-  tag_label: string;
-  phone_masked: string | null;
-  contact_name: string | null;
-  last_message_at: string | null;
-  current_node_code: string | null;
-  days_idle: number | null;
-  purchase_condition: string | null;
-  category: string | null;
-  run_key: string | null;
-  created_at: string | null;
+interface CountersTagRow {
+  tag_id: string;
+  code: string;
+  label: string;
+  color: string | null;
+  sort_order: number;
+  is_active: boolean;
+  is_system: boolean;
+  applied_count: number;
+  hidden_count: number;
+  dry_run_last24h_count: number;
 }
 
-interface SnapshotResponse {
+interface CountersResponse {
   ok: boolean;
   error?: string;
-  dry_run_only?: boolean;
-  wrote_changes?: false;
+  totals?: { tags: number; applied: number; hidden: number; dry_run_last24h: number };
+  tags?: CountersTagRow[];
+}
+
+interface ConversationRow {
+  conversation_id: string;
+  contact_id: string | null;
+  tag_id: string | null;
+  tag_code: string | null;
+  tag_label: string | null;
+  tag_color: string | null;
+  contact_name: string | null;
+  phone_masked: string | null;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+  current_node_code: string | null;
+  hidden_by_tag: boolean;
+  last_tagged_at: string | null;
+}
+
+interface ConversationsResponse {
+  ok: boolean;
+  error?: string;
   filters?: Record<string, unknown>;
   pagination?: { limit: number; offset: number; total: number };
-  by_tag?: ByTagRow[];
-  rows?: SnapshotRow[];
+  rows?: ConversationRow[];
 }
 
 interface ConversationPreviewMessage {
@@ -103,26 +121,70 @@ export default function EtiquetasClient() {
   const [phone, setPhone] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [currentNode, setCurrentNode] = useState("");
-  const [runKey, setRunKey] = useState("");
 
   const [limit] = useState(50);
   const [offset, setOffset] = useState(0);
 
-  // Data
-  const [byTag, setByTag] = useState<ByTagRow[]>([]);
-  const [rows, setRows] = useState<SnapshotRow[]>([]);
+  // Data: contadores vigentes (vienen de /api/chat/tags/counters al montar)
+  // Cuenta sobre chat_conversations.current_tag_id, NO sobre history.dry_run.
+  const [counterTags, setCounterTags] = useState<CountersTagRow[]>([]);
+  const [totalApplied, setTotalApplied] = useState(0);
+  const [loadingCounters, setLoadingCounters] = useState(true);
+  const [countersError, setCountersError] = useState<string | null>(null);
+
+  // Data: listado de conversaciones realmente etiquetadas
+  const [rows, setRows] = useState<ConversationRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // FASE 4E: no cargar al entrar. Solo cuando el usuario aplica filtros.
+  // No cargar al entrar. Solo cuando el usuario aplica filtros.
   const [hasSearched, setHasSearched] = useState(false);
   // Filtros efectivamente aplicados (los que viajan a la API).
-  // Se actualizan recien al presionar "Buscar", para que cambiar un input no dispare fetch.
   const [appliedFilters, setAppliedFilters] = useState<{
     tagCode: string; phone: string; dateFrom: string; dateTo: string;
-    currentNode: string; runKey: string;
   } | null>(null);
+
+  // Carga inicial de contadores + tags vigentes (chat_conversations.current_tag_id).
+  const fetchCounters = useCallback(async () => {
+    setLoadingCounters(true);
+    setCountersError(null);
+    try {
+      const res = await fetch("/api/chat/tags/counters", { cache: "no-store" });
+      const json: CountersResponse = await res.json();
+      if (!json.ok) {
+        setCountersError(json.error || "Error al cargar contadores");
+        setCounterTags([]);
+        setTotalApplied(0);
+        return;
+      }
+      setCounterTags(json.tags ?? []);
+      setTotalApplied(json.totals?.applied ?? 0);
+    } catch (e) {
+      setCountersError(e instanceof Error ? e.message : "Error inesperado");
+    } finally {
+      setLoadingCounters(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchCounters();
+  }, [fetchCounters]);
+
+  // ByTagRow derivado de los counters (lo que pinta las cards y el dropdown).
+  const byTag: ByTagRow[] = useMemo(
+    () =>
+      counterTags
+        .slice()
+        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.code.localeCompare(b.code))
+        .map((t) => ({
+          tag_id: t.tag_id,
+          tag_code: t.code,
+          tag_label: t.label,
+          tag_color: t.color,
+          n: t.applied_count,
+        })),
+    [counterTags]
+  );
 
   // Modal
   const [modalConvId, setModalConvId] = useState<string | null>(null);
@@ -137,15 +199,13 @@ export default function EtiquetasClient() {
     if (phone) n++;
     if (dateFrom) n++;
     if (dateTo) n++;
-    if (currentNode) n++;
-    if (runKey) n++;
     return n;
-  }, [tagCode, phone, dateFrom, dateTo, currentNode, runKey]);
+  }, [tagCode, phone, dateFrom, dateTo]);
 
   // Helper: construye la querystring a partir de un set de filtros aplicados y offset.
   const buildQuery = useCallback(
     (
-      f: { tagCode: string; phone: string; dateFrom: string; dateTo: string; currentNode: string; runKey: string },
+      f: { tagCode: string; phone: string; dateFrom: string; dateTo: string },
       off: number
     ) => {
       const sp = new URLSearchParams();
@@ -153,8 +213,6 @@ export default function EtiquetasClient() {
       if (f.phone) sp.set("phone", f.phone);
       if (f.dateFrom) sp.set("date_from", f.dateFrom);
       if (f.dateTo) sp.set("date_to", f.dateTo);
-      if (f.currentNode) sp.set("current_node_code", f.currentNode);
-      if (f.runKey) sp.set("run_key", f.runKey);
       sp.set("limit", String(limit));
       sp.set("offset", String(off));
       return sp.toString();
@@ -162,26 +220,25 @@ export default function EtiquetasClient() {
     [limit]
   );
 
-  const fetchSnapshot = useCallback(
+  // Lee conversaciones realmente etiquetadas (chat_conversations.current_tag_id).
+  const fetchConversations = useCallback(
     async (
-      f: { tagCode: string; phone: string; dateFrom: string; dateTo: string; currentNode: string; runKey: string },
+      f: { tagCode: string; phone: string; dateFrom: string; dateTo: string },
       off: number
     ) => {
       setLoading(true);
       setError(null);
       try {
         const qs = buildQuery(f, off);
-        const res = await fetch(`/api/chat/tags/snapshot?${qs}`, { cache: "no-store" });
-        const json: SnapshotResponse = await res.json();
+        const res = await fetch(`/api/chat/tags/conversations?${qs}`, { cache: "no-store" });
+        const json: ConversationsResponse = await res.json();
         if (!json.ok) {
           setError(json.error || "Error al cargar");
           setRows([]);
-          setByTag([]);
           setTotal(0);
           return;
         }
         setRows(json.rows ?? []);
-        setByTag(json.by_tag ?? []);
         setTotal(json.pagination?.total ?? 0);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Error inesperado");
@@ -198,30 +255,31 @@ export default function EtiquetasClient() {
       setError("Elegí al menos un filtro para consultar.");
       return;
     }
-    const next = { tagCode, phone, dateFrom, dateTo, currentNode, runKey };
+    const next = { tagCode, phone, dateFrom, dateTo };
     setAppliedFilters(next);
     setOffset(0);
     setHasSearched(true);
-    void fetchSnapshot(next, 0);
-  }, [filtersActiveCount, tagCode, phone, dateFrom, dateTo, currentNode, runKey, fetchSnapshot]);
+    void fetchConversations(next, 0);
+  }, [filtersActiveCount, tagCode, phone, dateFrom, dateTo, fetchConversations]);
 
-  // Recargar: solo tiene sentido si ya hubo búsqueda con filtros aplicados.
+  // Recargar: refresca la lista (si ya hay filtros) y también el contador superior.
   const handleReload = useCallback(() => {
+    void fetchCounters();
     if (!appliedFilters) {
       setError("Aplicá un filtro primero.");
       return;
     }
-    void fetchSnapshot(appliedFilters, offset);
-  }, [appliedFilters, offset, fetchSnapshot]);
+    void fetchConversations(appliedFilters, offset);
+  }, [appliedFilters, offset, fetchConversations, fetchCounters]);
 
   // Paginación: solo si ya hay filtros aplicados.
   const handlePage = useCallback(
     (newOffset: number) => {
       if (!appliedFilters) return;
       setOffset(newOffset);
-      void fetchSnapshot(appliedFilters, newOffset);
+      void fetchConversations(appliedFilters, newOffset);
     },
-    [appliedFilters, fetchSnapshot]
+    [appliedFilters, fetchConversations]
   );
 
   const openModal = useCallback(async (conversationId: string) => {
@@ -258,19 +316,16 @@ export default function EtiquetasClient() {
     setPhone("");
     setDateFrom("");
     setDateTo("");
-    setCurrentNode("");
-    setRunKey("");
     setOffset(0);
-    // FASE 4E: limpiar tambien el snapshot ya cargado y la marca de busqueda.
     setAppliedFilters(null);
     setRows([]);
-    setByTag([]);
     setTotal(0);
     setHasSearched(false);
     setError(null);
   }, []);
 
-  const grandTotal = useMemo(() => byTag.reduce((acc, r) => acc + r.n, 0), [byTag]);
+  // grandTotal = suma de applied_count vigente sobre chat_conversations.
+  const grandTotal = totalApplied;
 
   return (
     <div className="min-h-screen bg-slate-50 p-6">
@@ -280,24 +335,28 @@ export default function EtiquetasClient() {
           <div>
             <h1 className="text-2xl font-semibold text-slate-900">Etiquetas Automáticas</h1>
             <p className="mt-1 text-sm text-slate-500">
-              Visualización read-only del snapshot shadow. La configuración de
-              reglas vive en Configuración → Canales → WhatsApp.
+              Conversaciones clasificadas automáticamente según el estado del WhatsApp.
+              Si el cliente vuelve a escribir, reaparecen en Conversaciones.
             </p>
           </div>
         </div>
-        <div className="inline-flex max-w-md items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 shadow-sm">
-          <AlertTriangle size={14} className="text-amber-600 shrink-0" />
-          <span>Modo shadow / read-only. Son sugerencias calculadas; no ocultan conversaciones.</span>
+        <div className="inline-flex max-w-md items-center gap-2 rounded-xl border border-[#4FAEB2]/40 bg-[#4FAEB2]/10 px-3 py-2 text-xs font-medium text-[#3F8E91] shadow-sm">
+          <AlertTriangle size={14} className="text-[#4FAEB2] shrink-0" />
+          <span>Las conversaciones etiquetadas salen de Conversaciones. Si el cliente vuelve a escribir, reaparecen automáticamente.</span>
         </div>
       </header>
 
-      {/* Cards por etiqueta - solo despues de la primera busqueda */}
-      {hasSearched && byTag.length > 0 && (
+      {/* Cards por etiqueta — siempre visibles, leen el estado VIGENTE de chat_conversations.current_tag_id */}
+      {countersError && (
+        <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+          {countersError}
+        </div>
+      )}
       <section className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
         <div className="rounded-2xl border border-[#4FAEB2]/45 bg-white p-4 shadow-sm">
-          <div className="text-[11px] uppercase tracking-[0.1em] text-slate-500">Total filtrado</div>
+          <div className="text-[11px] uppercase tracking-[0.1em] text-slate-500">Total etiquetadas</div>
           <div className="mt-1.5 text-2xl font-semibold text-slate-900">
-            {grandTotal.toLocaleString("es-PY")}
+            {loadingCounters ? "…" : grandTotal.toLocaleString("es-PY")}
           </div>
         </div>
         {byTag.map((t) => {
@@ -312,7 +371,7 @@ export default function EtiquetasClient() {
                   const applied = { ...appliedFilters, tagCode: next };
                   setAppliedFilters(applied);
                   setOffset(0);
-                  void fetchSnapshot(applied, 0);
+                  void fetchConversations(applied, 0);
                 }
               }}
               className={`rounded-2xl border bg-white p-4 text-left shadow-sm transition-colors ${
@@ -326,7 +385,7 @@ export default function EtiquetasClient() {
                 {t.tag_label || t.tag_code}
               </div>
               <div className="mt-1.5 text-2xl font-semibold text-slate-900">
-                {t.n.toLocaleString("es-PY")}
+                {loadingCounters ? "…" : t.n.toLocaleString("es-PY")}
               </div>
               <div className={`mt-2 inline-block rounded-full px-2 py-0.5 text-[10px] ${tagPillClass(t.tag_code)}`}>
                 {t.tag_code}
@@ -335,7 +394,6 @@ export default function EtiquetasClient() {
           );
         })}
       </section>
-      )}
 
       {/* Filtros */}
       <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -343,7 +401,7 @@ export default function EtiquetasClient() {
           <span aria-hidden="true" className="inline-block h-1.5 w-1.5 rounded-full bg-[#4FAEB2]" />
           <h2 className="text-sm font-semibold text-slate-700">Filtros</h2>
         </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-6">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-600">Etiqueta</label>
             <select
@@ -351,7 +409,7 @@ export default function EtiquetasClient() {
               onChange={(e) => setTagCode(e.target.value)}
               className={SELECT_CN}
             >
-              <option value="">Todas</option>
+              <option value="">Todas las etiquetas</option>
               {byTag.map((t) => (
                 <option key={t.tag_code} value={t.tag_code}>{t.tag_label || t.tag_code}</option>
               ))}
@@ -367,41 +425,24 @@ export default function EtiquetasClient() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Desde</label>
+            <label className="mb-1 block text-xs font-medium text-slate-600">Último mensaje desde</label>
             <input
-              type="datetime-local"
+              type="date"
               value={dateFrom}
               onChange={(e) => setDateFrom(e.target.value)}
               className={INPUT_CN}
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Hasta</label>
+            <label className="mb-1 block text-xs font-medium text-slate-600">Último mensaje hasta</label>
             <input
-              type="datetime-local"
+              type="date"
               value={dateTo}
               onChange={(e) => setDateTo(e.target.value)}
               className={INPUT_CN}
             />
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Nodo actual</label>
-            <input
-              value={currentNode}
-              onChange={(e) => setCurrentNode(e.target.value)}
-              placeholder="ej. compra_realizada"
-              className={INPUT_CN}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">run_key</label>
-            <input
-              value={runKey}
-              onChange={(e) => setRunKey(e.target.value)}
-              placeholder="opcional"
-              className={`${INPUT_CN} font-mono`}
-            />
-          </div>
+          {/* run_key y current_node eliminados: la UI consulta el estado vigente, no snapshots. */}
         </div>
       </section>
 
@@ -465,30 +506,32 @@ export default function EtiquetasClient() {
         <table className="w-full text-sm">
           <thead className="bg-slate-50/80 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">
             <tr>
-              <th className="px-4 py-3">Etiqueta sugerida</th>
+              <th className="px-4 py-3">Etiqueta</th>
               <th className="px-4 py-3">Contacto</th>
-              <th className="px-4 py-3">Teléfono / Número</th>
-              <th className="px-4 py-3">Nodo</th>
-              <th className="px-4 py-3">Días inactivo</th>
-              <th className="px-4 py-3">Último msg</th>
-              <th className="px-4 py-3">Snapshot</th>
+              <th className="px-4 py-3">Teléfono</th>
+              <th className="px-4 py-3">Último mensaje</th>
+              <th className="px-4 py-3">Vista previa</th>
               <th className="px-4 py-3 text-right">Acción</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 && !loading && (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
+                <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                   Sin resultados para los filtros seleccionados.
                 </td>
               </tr>
             )}
             {rows.map((r) => (
-              <tr key={r.history_id} className="transition-colors hover:bg-[#4FAEB2]/5">
+              <tr key={r.conversation_id} className="transition-colors hover:bg-[#4FAEB2]/5">
                 <td className="px-4 py-2.5">
-                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${tagPillClass(r.tag_code)}`}>
-                    {r.tag_label || r.tag_code}
-                  </span>
+                  {r.tag_code ? (
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${tagPillClass(r.tag_code)}`}>
+                      {r.tag_label || r.tag_code}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )}
                 </td>
                 <td className="px-4 py-2.5 text-slate-700">
                   {r.contact_name || <span className="text-slate-400">—</span>}
@@ -496,12 +539,10 @@ export default function EtiquetasClient() {
                 <td className="px-4 py-2.5 font-mono text-sm font-semibold text-slate-800 tracking-wider">
                   {r.phone_masked || "—"}
                 </td>
-                <td className="px-4 py-2.5 text-slate-700">{r.current_node_code || "—"}</td>
-                <td className="px-4 py-2.5 text-slate-700">
-                  {r.days_idle != null ? `${r.days_idle}d` : "—"}
-                </td>
                 <td className="px-4 py-2.5 text-slate-500">{formatDate(r.last_message_at)}</td>
-                <td className="px-4 py-2.5 text-slate-500">{formatDate(r.created_at)}</td>
+                <td className="px-4 py-2.5 text-slate-500 max-w-xs truncate" title={r.last_message_preview ?? ""}>
+                  {r.last_message_preview ?? "—"}
+                </td>
                 <td className="px-4 py-2.5 text-right">
                   <button
                     type="button"
