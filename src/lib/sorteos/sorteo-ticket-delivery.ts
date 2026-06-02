@@ -689,7 +689,13 @@ export async function runSorteoTicketPreClose(params: {
     return { suppressPlainTextBody: false, needsPostFlowImage: true };
   }
 
-  const r = await maybeGenerateAndSendSorteoTicketDelivery({
+  // BACKGROUND: la generación de PNG no debe bloquear el response del webhook
+  // ni el siguiente paso del flow-engine. sharp es CPU-intensivo (~1-2 min en
+  // contenedor self-hosted) y bloqueaba el event loop si se awaitaba aquí.
+  // Lanzamos sin await; errores quedan en console.error pero no propagan.
+  // En image_only no podemos suprimir el texto (no esperamos resultado del
+  // render), así que cliente recibe texto + PNG cuando llegue.
+  void maybeGenerateAndSendSorteoTicketDelivery({
     supabase: params.supabase,
     empresaId: params.empresaId,
     sorteoId: params.orderResult.sorteoId,
@@ -701,13 +707,15 @@ export async function runSorteoTicketPreClose(params: {
     orderResult: params.orderResult,
     flowData: params.flowData,
     trigger: params.trigger,
+  }).catch((e) => {
+    console.error("[sorteo-ticket] at_close_time_background_render_error", {
+      entradaId: params.orderResult.entradaId,
+      message: e instanceof Error ? e.message : String(e),
+    });
   });
 
-  const suppress =
-    effectiveMode === "image_only" &&
-    (r.ok || (Boolean(r.skipped) && r.reason === "already_sent"));
   return {
-    suppressPlainTextBody: suppress,
+    suppressPlainTextBody: false,
     needsPostFlowImage: false,
   };
 }
@@ -748,7 +756,9 @@ export async function runSorteoTicketAfterBuyerText(params: {
     return;
   }
 
-  await maybeGenerateAndSendSorteoTicketDelivery({
+  // BACKGROUND: ver comentario en runSorteoTicketAtCloseTime. El render PNG
+  // bloquea sharp ~1-2 min y por eso aquí también disparamos sin await.
+  void maybeGenerateAndSendSorteoTicketDelivery({
     supabase: params.supabase,
     empresaId: params.empresaId,
     sorteoId: params.orderResult.sorteoId,
@@ -760,6 +770,11 @@ export async function runSorteoTicketAfterBuyerText(params: {
     orderResult: params.orderResult,
     flowData: params.flowData,
     trigger: params.trigger,
+  }).catch((e) => {
+    console.error("[sorteo-ticket] after_buyer_text_background_render_error", {
+      entradaId: params.orderResult.entradaId,
+      message: e instanceof Error ? e.message : String(e),
+    });
   });
 }
 
@@ -811,7 +826,12 @@ export async function runSorteoTicketAfterFinalNodeMessage(params: {
   if (mode === "text_only") {
     return { mode, delivery: null };
   }
-  const delivery = await maybeGenerateAndSendSorteoTicketDelivery({
+  // BACKGROUND: ver comentario en runSorteoTicketAtCloseTime. No awaitamos
+  // el render para liberar el event loop del flow-engine. Retornamos delivery
+  // null para indicar "se está procesando aparte"; los callers ya manejan
+  // este caso como "no suprimir texto" (cliente recibe texto inmediato + PNG
+  // cuando termine el render en background).
+  void maybeGenerateAndSendSorteoTicketDelivery({
     supabase: params.supabase,
     empresaId: params.empresaId,
     sorteoId: params.orderResult.sorteoId,
@@ -823,8 +843,13 @@ export async function runSorteoTicketAfterFinalNodeMessage(params: {
     orderResult: params.orderResult,
     flowData: params.flowData,
     trigger: "confirmacion_final",
+  }).catch((e) => {
+    console.error("[sorteo-ticket] after_final_node_background_render_error", {
+      entradaId: params.orderResult.entradaId,
+      message: e instanceof Error ? e.message : String(e),
+    });
   });
-  return { mode, delivery };
+  return { mode, delivery: null };
 }
 
 export function buildImageOnlyStubText(config: Record<string, unknown>): string {
