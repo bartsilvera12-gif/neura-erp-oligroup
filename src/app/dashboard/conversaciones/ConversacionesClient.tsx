@@ -1533,6 +1533,48 @@ export function ConversacionesClient({
     }
   }
 
+  /**
+   * FASE 4 — Toggle takeover bot↔humano desde la UI.
+   *
+   * Llama a POST /api/chat/flow/takeover (endpoint ya existente). NO envía
+   * mensaje al cliente. Solo actualiza `flow_status` y `human_taken_over`
+   * en la conversación. El flow-engine respeta el flag automáticamente.
+   *
+   * - mode="human": pausa el bot y manda la conversación a la pestaña Inbox.
+   * - mode="bot": devuelve la conversación al control del bot.
+   */
+  async function handleToggleTakeover(nextMode: "human" | "bot") {
+    if (!selectedId || opsBusy) return;
+    await runConversationOp(async () => {
+      const res = await fetchWithSupabaseSession("/api/chat/flow/takeover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: selectedId, mode: nextMode }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        human_taken_over?: boolean;
+        flow_status?: string;
+      };
+      if (!res.ok || !json.ok) {
+        throw new Error(json.error ?? `Error ${res.status}`);
+      }
+      // Optimismo local: actualizar el selected/lista sin esperar a refetch.
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === selectedId
+            ? {
+                ...c,
+                human_taken_over: Boolean(json.human_taken_over),
+                flow_status: typeof json.flow_status === "string" ? json.flow_status : c.flow_status,
+              }
+            : c
+        )
+      );
+    });
+  }
+
   async function openFinalizeModal() {
     const sel = selectedId ? conversations.find((c) => c.id === selectedId) : null;
     if (!selectedId || !sel || sel.status === "closed") return;
@@ -2760,6 +2802,33 @@ export function ConversacionesClient({
                           </div>
 
                           <div className="flex flex-wrap items-center justify-end gap-1.5">
+                            {/* FASE 4: Toggle bot ↔ humano (NO envía mensaje al cliente).
+                                - Si la conversación está en Bot: botón "Tomar conversación".
+                                - Si está en Humano/Inbox: botón "Volver al bot".
+                                El flow-engine respeta `human_taken_over` automáticamente. */}
+                            {selected.status !== "closed" ? (
+                              (selected.human_taken_over || selected.flow_status === "human") ? (
+                                <button
+                                  type="button"
+                                  disabled={opsBusy}
+                                  onClick={() => void handleToggleTakeover("bot")}
+                                  title="Devolver el control de esta conversación al bot. No envía mensaje al cliente."
+                                  className="inline-flex items-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-1.5 text-[11px] font-semibold text-violet-700 transition-colors hover:bg-violet-100 disabled:opacity-50"
+                                >
+                                  Volver al bot
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={opsBusy}
+                                  onClick={() => void handleToggleTakeover("human")}
+                                  title="Pausar el bot y tomar la conversación. El cliente no recibe ningún aviso."
+                                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50"
+                                >
+                                  Tomar conversación
+                                </button>
+                              )
+                            ) : null}
                             {vista !== "bot" ? (
                               <button
                                 type="button"

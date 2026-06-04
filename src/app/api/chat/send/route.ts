@@ -8,6 +8,7 @@ import {
   pgTouchConversationLastMessage,
 } from "@/lib/chat/chat-send-persist-pg";
 import { markFirstHumanOperatorReply } from "@/lib/chat/conversation-sla-markers";
+import { maybeAutoTakeoverOnHumanSend } from "@/lib/chat/auto-takeover";
 import {
   resolveOutboundTextContextFromIds,
   sendOutboundTextMessage,
@@ -153,6 +154,22 @@ export async function POST(request: NextRequest) {
       if (senderType === "human") {
         await pgMarkFirstHumanReplyIfUnset(pool, dataSchema, empresaId, conversationId, ts);
       }
+
+      // FASE 4: si el envío es de un operador humano autenticado, promovemos
+      // la conversación a modo humano (idempotente, sin tocar al cliente).
+      // El flow-engine ya respeta `human_taken_over=true` y dejará de
+      // procesar inbounds de esta conversación hasta que se vuelva al bot.
+      await maybeAutoTakeoverOnHumanSend({
+        supabase,
+        pool,
+        schema: dataSchema,
+        useTenantPg: true,
+        empresaId,
+        conversationId,
+        senderType,
+        byUserId: senderType === "human" ? auth.user.id : null,
+        byUserName: senderType === "human" ? auth.nombre ?? auth.user.email ?? null : null,
+      });
     } else {
       const { error: insErr } = await supabase.from("chat_messages").insert({
         empresa_id: empresaId,
@@ -187,6 +204,19 @@ export async function POST(request: NextRequest) {
       await markFirstHumanOperatorReply(supabase, empresaId, conversationId, {
         from_me: true,
         sender_type: senderType,
+      });
+
+      // FASE 4: idem rama PostgREST (cuando NO es tenantPg directo).
+      await maybeAutoTakeoverOnHumanSend({
+        supabase,
+        pool: null,
+        schema: dataSchema,
+        useTenantPg: false,
+        empresaId,
+        conversationId,
+        senderType,
+        byUserId: senderType === "human" ? auth.user.id : null,
+        byUserName: senderType === "human" ? auth.nombre ?? auth.user.email ?? null : null,
       });
     }
 

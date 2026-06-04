@@ -18,6 +18,7 @@ import { sendYCloudWhatsappMediaViaLink } from "@/lib/chat/ycloud-send-service";
 import { fetchDataSchemaForEmpresaId } from "@/lib/supabase/empresa-data-schema";
 import { getChatPostgresPool } from "@/lib/supabase/chat-pg-pool";
 import { isLikelyUnexposedTenantChatSchema } from "@/lib/supabase/chat-data-schema";
+import { maybeAutoTakeoverOnHumanSend } from "@/lib/chat/auto-takeover";
 
 const CHAT_MEDIA_BUCKET = "chat-media";
 
@@ -302,6 +303,21 @@ export async function POST(request: NextRequest) {
     await markFirstHumanOperatorReply(supabase, empresaId, conversationId, {
       from_me: true,
       sender_type: "human",
+    });
+
+    // FASE 4: el envío de media es siempre del operador humano. Promovemos
+    // la conversación a modo humano si todavía está en bot. Idempotente,
+    // sin tocar al cliente, controlado por AUTO_TAKEOVER_ON_HUMAN_SEND.
+    await maybeAutoTakeoverOnHumanSend({
+      supabase,
+      pool: tenantPg ? pool : null,
+      schema: dataSchema,
+      useTenantPg: tenantPg,
+      empresaId,
+      conversationId,
+      senderType: "human",
+      byUserId: auth.user.id,
+      byUserName: auth.nombre ?? auth.user.email ?? null,
     });
 
     return NextResponse.json({ ok: true, wa_message_id: sendResult.waMessageId, public_url: publicUrl });
