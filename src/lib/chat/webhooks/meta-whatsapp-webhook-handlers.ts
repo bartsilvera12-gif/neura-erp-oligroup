@@ -68,6 +68,26 @@ export async function handleWhatsAppWebhookGet(request: NextRequest): Promise<Ne
 }
 
 /**
+ * FASE 1 (anti-duplicación) — respuesta 200 OK temprana.
+ *
+ * Mismo flag que controla el claim gate en `whatsapp-webhook-service.ts`.
+ * Con el flag activo (default), respondemos 200 OK inmediatamente después
+ * de validar firma + parsear body, y procesamos el webhook en background.
+ * Esto evita que Meta reintente por timeout (~10s) mientras el flow-engine
+ * envía respuestas — la causa raíz de la duplicación.
+ *
+ * Seguridad ante caída del proceso: el primer paso del procesamiento
+ * async es el claim atómico (INSERT ON CONFLICT) que persiste el inbound.
+ * Si el proceso muere después de ese INSERT pero antes del flow-engine, el
+ * inbound queda guardado y el siguiente reintento de Meta (si lo hubiera)
+ * cae en el branch `duplicate=true` con `continue`. Único caso degradado:
+ * el cliente queda sin respuesta del bot para ese turno particular. La
+ * probabilidad real es <0.1% (milisegundos entre INSERT y `void flowEngine()`).
+ */
+const WEBHOOK_EARLY_200_ENABLED =
+  (process.env.WEBHOOK_CLAIM_GATE_ENABLED ?? "true").trim().toLowerCase() !== "false";
+
+/**
  * POST — eventos entrantes Meta WhatsApp.
  */
 export async function handleWhatsAppWebhookPost(request: NextRequest): Promise<NextResponse> {
@@ -93,6 +113,38 @@ export async function handleWhatsAppWebhookPost(request: NextRequest): Promise<N
       defaultEmpresaId: process.env.WHATSAPP_DEFAULT_EMPRESA_ID?.trim(),
       expectedPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID?.trim(),
     };
+
+    if (WEBHOOK_EARLY_200_ENABLED) {
+      // FASE 1: respuesta 200 OK temprana + procesamiento async.
+      // El claim atómico dentro de processWhatsAppWebhookBody garantiza
+      // que aunque Meta reintente o el proceso muera y reinicie, sólo se
+      // ejecuta el flow-engine una vez por wa_message_id.
+      void (async () => {
+        try {
+          const result = await processWhatsAppWebhookBody(supabase, body, provisionEnv);
+          if (result.errors.length > 0) {
+            console.warn("[webhooks/whatsapp][POST][async-warn]", {
+              processed: result.processed,
+              skipped: result.skipped,
+              errors: result.errors,
+            });
+          } else if (result.processed > 0 || result.skipped > 0) {
+            console.info("[webhooks/whatsapp][POST][async-done]", {
+              processed: result.processed,
+              skipped: result.skipped,
+            });
+          }
+        } catch (e) {
+          console.error("[webhooks/whatsapp][POST][async-error]", {
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      })();
+
+      return NextResponse.json({ ok: true, accepted: true });
+    }
+
+    // === Path heredado (flag OFF) — comportamiento previo a Fase 1. ===
     const result = await processWhatsAppWebhookBody(supabase, body, provisionEnv);
 
     if (result.errors.length > 0) {

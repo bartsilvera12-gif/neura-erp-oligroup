@@ -85,6 +85,31 @@ const WH_MSG = "[webhooks/whatsapp][insert_message]";
 const WH_FLOW = "[webhooks/whatsapp][flow_session]";
 const WH_STATUS = "[whatsapp-status]";
 
+/**
+ * FASE 1 (anti-duplicación) — Claim gate atómico.
+ *
+ * Causa raíz de la duplicación que reportaba el cliente: el handler tardaba
+ * más de los ~10s de timeout de Meta y Meta reintentaba el webhook. El
+ * `messageExists()` previo era un SELECT sin lock → race condition entre
+ * intento y reintento, ambos disparaban el flow-engine, el bot enviaba la
+ * misma respuesta 2-5 veces.
+ *
+ * Fix: usar el resultado del `INSERT ON CONFLICT (wa_message_id) DO NOTHING
+ * RETURNING id` de `persistInboundEarlyViaPg` como gate del flow-engine.
+ * Sólo el ganador del claim ejecuta el resto del procesamiento; los
+ * perdedores hacen `continue` con un log `[webhook][claim][lost]`.
+ *
+ * Rollback rápido sin git revert: setear `WEBHOOK_CLAIM_GATE_ENABLED=false`
+ * en Coolify y redeploy. El comportamiento vuelve a ser el previo a Fase 1
+ * (todos los reintentos ejecutaban flow-engine).
+ *
+ * Excepción consciente: `mustRetryInboundRoutingDespiteDedupe` (botones /
+ * interactive replies de campañas) mantiene comportamiento actual en Fase 1
+ * para no romper el funnel de campañas Meta. Auditoría profunda en Fase 2.
+ */
+const WEBHOOK_CLAIM_GATE_ENABLED =
+  (process.env.WEBHOOK_CLAIM_GATE_ENABLED ?? "true").trim().toLowerCase() !== "false";
+
 function contactNameForWa(
   contacts: MetaWebhookValue["contacts"],
   waId: string
@@ -856,6 +881,34 @@ export async function processInboundWebhookValue(
             message_id: earlyR.message_id,
           });
           inboundMessageAlreadyPersisted = true;
+
+          // === FASE 1: CLAIM GATE — PERDEDOR ===
+          // El INSERT ON CONFLICT no agregó la fila → otro request ya está
+          // procesando (o ya procesó) este wa_message_id. Saltamos el resto
+          // del loop para que el flow-engine NO se ejecute una segunda vez.
+          //
+          // Excepción: si Meta nos manda un click de plantilla (button /
+          // interactive reply) duplicado, dejamos pasar el routing especial
+          // de campañas (Fase 2 lo audita en detalle). En todos los demás
+          // tipos cortamos acá.
+          if (WEBHOOK_CLAIM_GATE_ENABLED && !mustRetryInboundRoutingDespiteDedupe) {
+            console.info("[webhook][claim][lost]", {
+              conversationId,
+              wa_mid: waMid,
+              msg_type: msgTypeInbound,
+              existing_message_id: earlyR.message_id,
+            });
+            skipped += 1;
+            continue;
+          }
+          if (mustRetryInboundRoutingDespiteDedupe) {
+            console.info("[webhook][claim][lost-but-routing-retry]", {
+              conversationId,
+              wa_mid: waMid,
+              msg_type: msgTypeInbound,
+              existing_message_id: earlyR.message_id,
+            });
+          }
         } else {
           console.info("[webhook][early-inbound-persist][ok]", {
             conversationId,
@@ -863,6 +916,17 @@ export async function processInboundWebhookValue(
             message_id: earlyR.message_id,
           });
           inboundMessageAlreadyPersisted = true;
+
+          // === FASE 1: CLAIM GATE — GANADOR ===
+          // Somos el único proceso que va a ejecutar el flow-engine para
+          // este wa_message_id. Cualquier reintento posterior de Meta cae
+          // en el branch duplicate=true y será skipeado.
+          console.info("[webhook][claim][won]", {
+            conversationId,
+            wa_mid: waMid,
+            msg_type: msgTypeInbound,
+            message_id: earlyR.message_id,
+          });
         }
       }
 
