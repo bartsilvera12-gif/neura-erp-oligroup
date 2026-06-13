@@ -23,6 +23,10 @@ import {
 } from "@/lib/chat/omnicanal-scope";
 import { buildPgOmnicanalConversationScopeAndClause } from "@/lib/chat/omnicanal-scope-pg";
 import { pgSelectChatAgentIdsForUsuarios } from "@/lib/chat/omnicanal-scope-pg";
+import {
+  buildBotTabSqlPredicate,
+  isInboxSqlTabFilterEnabled,
+} from "@/lib/chat/inbox-bot-tab-sql-predicate";
 import type { AppSupabaseClient } from "@/lib/supabase/schema";
 import {
   isPgPoolExhaustionMessage,
@@ -316,6 +320,7 @@ export async function fetchChatConversationsFromTenantPg(
   let pi = 2;
   const whereParts: string[] = [`empresa_id = $1::uuid`];
 
+  const sqlTabFilter = isInboxSqlTabFilterEnabled();
   if (vista === "inbox" || vista === "bot") {
     /** Inbox y Bot comparten el mismo universo (abiertas/pendientes); la pestaña se decide al clasificar. */
     whereParts.push(`status IN ('open','pending')`);
@@ -326,6 +331,14 @@ export async function fetchChatConversationsFromTenantPg(
     );
     if (await schemaHasHiddenByTagColumn(pool, dataSchema)) {
       whereParts.push(`COALESCE(hidden_by_tag, false) = false`);
+    }
+    // FIX inbox-vacío (flag INBOX_SQL_TAB_FILTER): separar Inbox/Bot en SQL ANTES
+    // del LIMIT. Sin esto, la paginación trae 100 por recencia (todas bot cuando
+    // el bot está activo) y el tab Inbox queda vacío aunque haya humanas más abajo.
+    // Predicado validado al 100% contra conversationBelongsToBotTab.
+    if (sqlTabFilter) {
+      const botPredicate = buildBotTabSqlPredicate(dataSchema);
+      whereParts.push(vista === "bot" ? botPredicate : `NOT ${botPredicate}`);
     }
   } else if (vista === "historial") {
     whereParts.push(`status = 'closed'`);
@@ -541,7 +554,12 @@ export async function fetchChatConversationsFromTenantPg(
   ) as Record<string, unknown>[];
 
   let botTabCount = 0;
-  if (vista === "inbox") {
+  if (sqlTabFilter && (vista === "inbox" || vista === "bot")) {
+    // Con el flag ON el split Inbox/Bot ya lo hizo el WHERE SQL: `list` ya
+    // contiene solo las filas de la pestaña pedida. No re-filtramos en memoria
+    // (eso reintroduciría el problema de paginar-antes-de-clasificar).
+    botTabCount = vista === "bot" ? list.length : 0;
+  } else if (vista === "inbox") {
     botTabCount = list.filter((row) => conversationBelongsToBotTab(row, classifyCtx)).length;
     list = list.filter((row) => !conversationBelongsToBotTab(row, classifyCtx));
   } else if (vista === "bot") {

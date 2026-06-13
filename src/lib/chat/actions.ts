@@ -10,6 +10,7 @@ import {
   maskPhonePartialForLog,
   type FlowSessionRowMin,
 } from "@/lib/chat/inbox-bot-tab-classification";
+import { isInboxSqlTabFilterEnabled } from "@/lib/chat/inbox-bot-tab-sql-predicate";
 import {
   loadActiveFlowSessionsByConversationForInboxList,
 } from "@/lib/chat/inbox-list-flow-sessions";
@@ -352,7 +353,21 @@ async function fetchChatConversationsUnsafe(
     timestamp: ts,
   });
 
-  if (poolInbox && isLikelyUnexposedTenantChatSchema(dataSchema)) {
+  /**
+   * FIX inbox-vacío (flag INBOX_SQL_TAB_FILTER): el path PostgREST resuelve
+   * Inbox/Bot en memoria DESPUÉS de paginar, así que con el bot activo el tab
+   * Inbox queda vacío. El path tenant_pg (raw SQL) sí puede filtrar la pestaña
+   * en el WHERE antes del LIMIT. Cuando el flag está ON y hay pool disponible,
+   * enrutamos Inbox/Bot por el path tenant_pg aunque el schema esté "expuesto".
+   * Flag OFF → comportamiento idéntico al actual (sin cambios).
+   */
+  const routeViaTenantPgForSqlTabFilter = Boolean(
+    poolInbox &&
+      isInboxSqlTabFilterEnabled() &&
+      (vista === "inbox" || vista === "bot")
+  );
+
+  if (poolInbox && (isLikelyUnexposedTenantChatSchema(dataSchema) || routeViaTenantPgForSqlTabFilter)) {
     /**
      * Observabilidad: `withInboxLatencyMeasure` mide la duración del fetch.
      * Es no-op si `CHAT_INBOX_OBSERVABILITY` no está activo, así que el
