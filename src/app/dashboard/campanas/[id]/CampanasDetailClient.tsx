@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import {
   buildCampaignTemplatePreviewText,
@@ -97,6 +97,8 @@ export default function CampanasDetailClient({
   void _onClose;
   const isModal = variant === "modal";
   const [campaign, setCampaign] = useState<CampaignDetail | null>(null);
+  /** Guard de in-flight del poller: evita ticks solapados de /api/campanas/process. */
+  const processingRef = useRef(false);
   const [events, setEvents] = useState<EvRow[]>([]);
   const [recipients, setRecipients] = useState<unknown[]>([]);
   const [loading, setLoading] = useState(true);
@@ -146,13 +148,24 @@ export default function CampanasDetailClient({
   useEffect(() => {
     if (!campaign || campaign.status !== "sending") return;
     const t = window.setInterval(() => {
+      // Guard de in-flight: si el tick anterior sigue procesando (un lote puede
+      // tardar >4s), NO disparamos otro POST /process. Sin esto, los ticks se
+      // solapan y —junto con la falta de reclamo atómico— duplican envíos
+      // (factor 1 del bug de duplicados). El servidor igual tiene la garantía
+      // dura (reclamo atómico), esto reduce presión/casos borde.
+      if (processingRef.current) return;
+      processingRef.current = true;
       void (async () => {
-        await fetchWithSupabaseSession("/api/campanas/process", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ campaign_id: campaignId }),
-        });
-        await load();
+        try {
+          await fetchWithSupabaseSession("/api/campanas/process", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ campaign_id: campaignId }),
+          });
+          await load();
+        } finally {
+          processingRef.current = false;
+        }
       })();
     }, 4000);
     return () => window.clearInterval(t);

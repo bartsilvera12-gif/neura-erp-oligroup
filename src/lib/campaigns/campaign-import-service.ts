@@ -80,7 +80,11 @@ export function parseCampaignSpreadsheet(buffer: Buffer, filename: string): Pars
     headers.forEach((h, j) => {
       row[h] = line[j] != null ? String(line[j]).trim() : "";
     });
-    rows.push(row);
+    // Excel arrastra filas totalmente vacías en el "rango usado" del sheet.
+    // Las descartamos acá para no inflar el conteo de inválidos.
+    if (Object.values(row).some((v) => String(v ?? "").trim() !== "")) {
+      rows.push(row);
+    }
   }
 
   return { headers, rows };

@@ -7,6 +7,13 @@ import {
 
 export const DEFAULT_BATCH_SIZE = 25;
 
+/**
+ * Antigüedad mínima de una fila `sending` para considerarla "atascada" y volver
+ * a encolarla. Evita reencolar (y reenviar) envíos que están en vuelo ahora
+ * mismo. Ver fix de duplicados de campaña (factor 3).
+ */
+const STALE_SENDING_MS = 3 * 60 * 1000;
+
 export async function refreshCampaignCounters(supabase: SupabaseAdmin, empresaId: string, campaignId: string) {
   const statuses = [
     "pending",
@@ -73,13 +80,18 @@ export async function runCampaignProcessOnce(params: {
     return { processed: 0, remainingQueued: 0, campaignCompleted: st === "completed" || st === "cancelled" };
   }
 
+  // Re-encolar SOLO envíos realmente atascados (no los de segundos atrás que
+  // podrían estar en vuelo). Sin este filtro por antigüedad, cada corrida
+  // reencolaba envíos en curso y los reenviaba (factor 3 del bug de duplicados).
+  const staleBefore = new Date(Date.now() - STALE_SENDING_MS).toISOString();
   await supabase
     .from("chat_campaign_recipients")
     .update({ status: "queued", updated_at: new Date().toISOString() })
     .eq("empresa_id", empresaId)
     .eq("campaign_id", campaignId)
     .eq("status", "sending")
-    .is("provider_message_id", null);
+    .is("provider_message_id", null)
+    .lt("updated_at", staleBefore);
 
   if ((campaign as { template_id?: string | null }).template_id) {
     const tid = (campaign as { template_id: string }).template_id;
@@ -139,11 +151,24 @@ export async function runCampaignProcessOnce(params: {
     }
 
     const ts = new Date().toISOString();
-    await supabase
+
+    // RECLAMO ATÓMICO (compare-and-swap): solo tomamos la fila si SIGUE en
+    // 'queued'. Si otra corrida solapada (otra pestaña / desktop+móvil / el
+    // cron) ya la reclamó, este UPDATE afecta 0 filas y la salteamos SIN
+    // enviar. Esta es la garantía dura contra duplicados, porque Meta no
+    // deduplica (factor 2 del bug). NO quitar la condición `.eq("status",
+    // "queued")`.
+    const { data: claimed } = await supabase
       .from("chat_campaign_recipients")
       .update({ status: "sending", updated_at: ts })
       .eq("id", rec.id)
-      .eq("empresa_id", empresaId);
+      .eq("empresa_id", empresaId)
+      .eq("status", "queued")
+      .select("id");
+    if (!claimed || claimed.length === 0) {
+      // Ya la tomó otra corrida: no reenviar.
+      continue;
+    }
 
     const send = await sendCampaignRecipientMessage({
       supabase,
