@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getChatPostgresPool, quoteSchemaTable } from "@/lib/supabase/chat-pg-pool";
 import { getSingleClientSchemaOrNull, isSingleClientMode } from "@/lib/instance/single-client";
 import { assertAllowedChatDataSchema } from "@/lib/supabase/chat-data-schema";
-import { verifyRevendedorReportToken } from "@/lib/sorteos/revendedor-report-token";
+import { verifyRevendedorReportToken, revendedorReportSlug } from "@/lib/sorteos/revendedor-report-token";
 
 /**
  * GET /api/r/reporte/[token] — reporte PÚBLICO de un revendedor (sin sesión).
@@ -19,10 +19,6 @@ export async function GET(
 ) {
   try {
     const { token } = await params;
-    const revendedorId = verifyRevendedorReportToken(token);
-    if (!revendedorId) {
-      return NextResponse.json({ ok: false, error: "token_invalido" }, { status: 404 });
-    }
 
     if (!isSingleClientMode()) {
       return NextResponse.json({ ok: false, error: "not_supported" }, { status: 400 });
@@ -34,6 +30,27 @@ export async function GET(
     if (!pool) return NextResponse.json({ ok: false, error: "pool_unavailable" }, { status: 503 });
 
     const tRev = quoteSchemaTable(schema, "sorteo_revendedores");
+
+    // Resolver el identificador de la URL:
+    //  - slug corto (8 chars base32): computamos el slug de cada revendedor y
+    //    matcheamos (no enumerable, sin guardar nada en DB).
+    //  - token largo firmado (contiene "."): compat con links ya generados.
+    let revendedorId: string | null = null;
+    const key = String(token ?? "").trim();
+    if (key.includes(".")) {
+      revendedorId = verifyRevendedorReportToken(key);
+    } else if (/^[0-9a-z]{8}$/.test(key)) {
+      const allIds = await pool.query<{ id: string }>(`SELECT id::text FROM ${tRev}`);
+      for (const row of allIds.rows) {
+        if (revendedorReportSlug(row.id) === key) {
+          revendedorId = row.id;
+          break;
+        }
+      }
+    }
+    if (!revendedorId) {
+      return NextResponse.json({ ok: false, error: "token_invalido" }, { status: 404 });
+    }
     const tSor = quoteSchemaTable(schema, "sorteos");
     const tEnt = quoteSchemaTable(schema, "sorteo_entradas");
     const tClk = quoteSchemaTable(schema, "sorteo_revendedor_clicks");

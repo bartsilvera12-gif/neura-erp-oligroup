@@ -19,7 +19,7 @@ type RevRow = {
   boletos: number;
   monto: number;
   conversion: number;
-  report_token: string;
+  report_slug: string;
 };
 
 type Resumen = {
@@ -95,7 +95,7 @@ export default function RevendedoresModulePage() {
 
   const copyLink = useCallback(
     async (rev: RevRow) => {
-      const url = reportUrl(rev.report_token);
+      const url = reportUrl(rev.report_slug);
       try {
         await navigator.clipboard.writeText(url);
         setCopied(rev.id);
@@ -213,7 +213,7 @@ export default function RevendedoresModulePage() {
                           {copied === rev.id ? "¡Copiado!" : "Copiar link"}
                         </button>
                         <a
-                          href={reportUrl(rev.report_token)}
+                          href={reportUrl(rev.report_slug)}
                           target="_blank"
                           rel="noreferrer"
                           className="rounded-lg bg-[#4FAEB2] px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-[#3F8E91]"

@@ -3,7 +3,7 @@ import { getChatServiceClientForEmpresa } from "@/app/api/chat/_chat-service-cli
 import { getTenantSupabaseFromAuth } from "@/lib/supabase/tenant-api";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { API_ERRORS } from "@/lib/api/errors";
-import { signRevendedorReportToken } from "@/lib/sorteos/revendedor-report-token";
+import { revendedorReportSlug } from "@/lib/sorteos/revendedor-report-token";
 
 const VALID_STATES = ["confirmado", "pendiente_revision"];
 
@@ -21,7 +21,7 @@ export type RevendedorResumenRow = {
   boletos: number;
   monto: number;
   conversion: number; // ventas / clicks (0..1)
-  report_token: string;
+  report_slug: string;
 };
 
 /**
@@ -99,7 +99,7 @@ export async function GET(request: NextRequest) {
         boletos,
         monto,
         conversion: clicks > 0 ? ventas / clicks : 0,
-        report_token: signRevendedorReportToken(rv.id),
+        report_slug: revendedorReportSlug(rv.id),
       });
     }
 

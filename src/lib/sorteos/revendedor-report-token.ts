@@ -35,6 +35,38 @@ function sigFor(revendedorId: string): string {
   return crypto.createHmac("sha256", secret()).update(revendedorId).digest("hex").slice(0, 32);
 }
 
+/**
+ * Slug corto para el link público: 8 caracteres base32 (alfabeto sin caracteres
+ * ambiguos) derivados por HMAC del revendedorId.
+ *
+ * - Corto y legible: `/r/reporte/ab3k9x7q`.
+ * - No adivinable ni enumerable (necesitás el secret para computarlo).
+ * - Determinístico → NO requiere guardar nada en DB. El endpoint público
+ *   resuelve el slug computándolo para cada revendedor y matcheando.
+ * - 40 bits de espacio → sin colisiones prácticas para miles de vendedores.
+ */
+const SLUG_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"; // 32 chars, sin i/l/o/u
+
+export function revendedorReportSlug(revendedorId: string): string {
+  const id = String(revendedorId ?? "").trim();
+  if (!id) throw new Error("revendedorId vacío");
+  const digest = crypto.createHmac("sha256", secret()).update(id).digest(); // Buffer
+  // Base32 de los primeros 5 bytes (40 bits) → 8 chars. Streaming en 32 bits
+  // (sin BigInt): el acumulador nunca pasa de ~12 bits antes de emitir.
+  let buffer = 0;
+  let bitsLeft = 0;
+  let out = "";
+  for (let i = 0; i < 5; i++) {
+    buffer = (buffer << 8) | digest[i];
+    bitsLeft += 8;
+    while (bitsLeft >= 5) {
+      bitsLeft -= 5;
+      out += SLUG_ALPHABET[(buffer >> bitsLeft) & 31];
+    }
+  }
+  return out;
+}
+
 /** Genera el token firmado para el link público de reporte. */
 export function signRevendedorReportToken(revendedorId: string): string {
   const id = String(revendedorId ?? "").trim();
