@@ -15,6 +15,12 @@ import { BootProvider, useBoot } from "@/components/BootContext";
 
 const PUBLIC_ROUTES = ["/login"];
 
+/**
+ * Prefijos públicos (sin sesión). `/r/` = links de referido y reportes públicos
+ * de revendedores (protegidos por token firmado, no por sesión).
+ */
+const PUBLIC_PREFIXES = ["/r/"];
+
 type ModuleAccess = { superAdmin: boolean; slugs: Set<string> };
 
 function AuthGuardInner({ children }: { children: React.ReactNode }) {
@@ -25,7 +31,11 @@ function AuthGuardInner({ children }: { children: React.ReactNode }) {
   const [access, setAccess] = useState<ModuleAccess | null>(null);
 
   const isPublic = useMemo(
-    () => !!(pathname && PUBLIC_ROUTES.includes(pathname)),
+    () =>
+      !!(
+        pathname &&
+        (PUBLIC_ROUTES.includes(pathname) || PUBLIC_PREFIXES.some((p) => pathname.startsWith(p)))
+      ),
     [pathname]
   );
 

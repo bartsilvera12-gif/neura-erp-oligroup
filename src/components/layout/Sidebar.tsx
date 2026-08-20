@@ -180,7 +180,10 @@ const MENU_STRUCTURE: MenuItem[] = [
     label: "Sorteos",
     href: "/sorteos",
     icon: Ticket,
-    children: [{ label: "Tickets / Comprobantes", href: "/sorteos/tickets", exactMatch: true }],
+    children: [
+      { label: "Revendedores", href: "/sorteos/revendedores", exactMatch: true },
+      { label: "Tickets / Comprobantes", href: "/sorteos/tickets", exactMatch: true },
+    ],
   },
   {
     key: "etiquetas",
