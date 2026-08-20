@@ -5,10 +5,18 @@ import Sidebar from "./layout/Sidebar";
 import Header from "./layout/Header";
 
 const STANDALONE_ROUTES = ["/login"];
+/**
+ * Prefijos que se renderizan SIN el chrome del ERP (sin sidebar/header), a
+ * pantalla completa. `/r/` = páginas públicas (referidos + reportes de
+ * revendedores) que abren clientes/vendedores sin sesión.
+ */
+const STANDALONE_PREFIXES = ["/r/"];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isStandalone = pathname && STANDALONE_ROUTES.includes(pathname);
+  const isStandalone =
+    !!pathname &&
+    (STANDALONE_ROUTES.includes(pathname) || STANDALONE_PREFIXES.some((p) => pathname.startsWith(p)));
 
   if (isStandalone) {
     return <>{children}</>;
