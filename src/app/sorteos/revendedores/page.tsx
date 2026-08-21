@@ -107,6 +107,43 @@ export default function RevendedoresModulePage() {
     [reportUrl]
   );
 
+  const [downloading, setDownloading] = useState<null | "xlsx" | "pdf">(null);
+  const downloadExport = useCallback(
+    async (format: "xlsx" | "pdf") => {
+      if (!sorteoId || downloading) return;
+      setDownloading(format);
+      setErr(null);
+      try {
+        const res = await fetchWithSupabaseSession(
+          `/api/sorteos/revendedores/export?sorteo_id=${encodeURIComponent(sorteoId)}&format=${format}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) {
+          const j = (await res.json().catch(() => ({}))) as { error?: string };
+          setErr(j.error ?? `Error ${res.status}`);
+          return;
+        }
+        const blob = await res.blob();
+        const cd = res.headers.get("Content-Disposition") ?? "";
+        const m = cd.match(/filename="([^"]+)"/);
+        const filename = m?.[1] ?? `revendedores.${format}`;
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Error al descargar");
+      } finally {
+        setDownloading(null);
+      }
+    },
+    [sorteoId, downloading]
+  );
+
   const totales = data?.totales;
   const revs = useMemo(() => data?.revendedores ?? [], [data]);
 
@@ -118,20 +155,38 @@ export default function RevendedoresModulePage() {
           <h1 className="text-xl font-bold text-slate-900">Revendedores</h1>
           <p className="text-sm text-slate-500 mt-0.5">Rendimiento por vendedor y link de reporte para compartir.</p>
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <span className="text-slate-500">Sorteo</span>
-          <select
-            value={sorteoId}
-            onChange={(e) => setSorteoId(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm focus:border-[#4FAEB2] focus:outline-none"
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-slate-500">Sorteo</span>
+            <select
+              value={sorteoId}
+              onChange={(e) => setSorteoId(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm focus:border-[#4FAEB2] focus:outline-none"
+            >
+              {sorteos.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.nombre} {s.estado === "activo" ? "• activo" : `• ${s.estado}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={!sorteoId || downloading !== null}
+            onClick={() => void downloadExport("xlsx")}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50"
           >
-            {sorteos.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.nombre} {s.estado === "activo" ? "• activo" : `• ${s.estado}`}
-              </option>
-            ))}
-          </select>
-        </label>
+            {downloading === "xlsx" ? "Generando…" : "Descargar Excel"}
+          </button>
+          <button
+            type="button"
+            disabled={!sorteoId || downloading !== null}
+            onClick={() => void downloadExport("pdf")}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-50"
+          >
+            {downloading === "pdf" ? "Generando…" : "Descargar PDF"}
+          </button>
+        </div>
       </div>
 
       {/* KPIs */}
