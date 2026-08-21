@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
+import { createRevendedor } from "@/lib/sorteos/revendedores-actions";
 
 type SorteoLite = { id: string; nombre: string; estado: string };
 
@@ -39,6 +40,14 @@ export default function RevendedoresModulePage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+
+  // Alta de revendedor (antes vivía en el editor del sorteo).
+  const [showForm, setShowForm] = useState(false);
+  const [nNombre, setNNombre] = useState("");
+  const [nTelefono, setNTelefono] = useState("");
+  const [nCodigo, setNCodigo] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createErr, setCreateErr] = useState<string | null>(null);
 
   // Cargar sorteos para el selector; default = activo.
   useEffect(() => {
@@ -107,6 +116,33 @@ export default function RevendedoresModulePage() {
     [reportUrl]
   );
 
+  const handleCreate = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!sorteoId || creating) return;
+      setCreateErr(null);
+      setCreating(true);
+      try {
+        await createRevendedor(sorteoId, {
+          nombre: nNombre,
+          telefono: nTelefono.trim() || null,
+          codigo_referido: nCodigo,
+          activo: true,
+        });
+        setNNombre("");
+        setNTelefono("");
+        setNCodigo("");
+        setShowForm(false);
+        await load(sorteoId);
+      } catch (ex) {
+        setCreateErr(ex instanceof Error ? ex.message : "No se pudo crear el revendedor");
+      } finally {
+        setCreating(false);
+      }
+    },
+    [sorteoId, creating, nNombre, nTelefono, nCodigo, load]
+  );
+
   // Descarga por revendedor: clave `${revId}:${format}` mientras genera.
   const [downloading, setDownloading] = useState<string | null>(null);
   const downloadExport = useCallback(
@@ -156,21 +192,95 @@ export default function RevendedoresModulePage() {
           <h1 className="text-xl font-bold text-slate-900">Revendedores</h1>
           <p className="text-sm text-slate-500 mt-0.5">Rendimiento por vendedor y link de reporte para compartir.</p>
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <span className="text-slate-500">Sorteo</span>
-          <select
-            value={sorteoId}
-            onChange={(e) => setSorteoId(e.target.value)}
-            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm focus:border-[#4FAEB2] focus:outline-none"
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-slate-500">Sorteo</span>
+            <select
+              value={sorteoId}
+              onChange={(e) => setSorteoId(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm focus:border-[#4FAEB2] focus:outline-none"
+            >
+              {sorteos.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.nombre} {s.estado === "activo" ? "• activo" : `• ${s.estado}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={!sorteoId}
+            onClick={() => {
+              setCreateErr(null);
+              setShowForm((v) => !v);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#4FAEB2] px-3 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-[#3F8E91] disabled:opacity-50"
           >
-            {sorteos.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.nombre} {s.estado === "activo" ? "• activo" : `• ${s.estado}`}
-              </option>
-            ))}
-          </select>
-        </label>
+            {showForm ? "Cerrar" : "+ Nuevo revendedor"}
+          </button>
+        </div>
       </div>
+
+      {/* Alta de revendedor */}
+      {showForm ? (
+        <form
+          onSubmit={handleCreate}
+          className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+        >
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="sm:col-span-1">
+              <label className="mb-1 block text-xs font-medium text-slate-600">Nombre</label>
+              <input
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-[#4FAEB2] focus:outline-none"
+                value={nNombre}
+                onChange={(e) => setNNombre(e.target.value)}
+                placeholder="Nombre del vendedor"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Teléfono (opcional)</label>
+              <input
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-[#4FAEB2] focus:outline-none"
+                value={nTelefono}
+                onChange={(e) => setNTelefono(e.target.value)}
+                placeholder="09xx xxx xxx"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Código referido (único)</label>
+              <input
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono focus:border-[#4FAEB2] focus:outline-none"
+                value={nCodigo}
+                onChange={(e) => setNCodigo(e.target.value)}
+                placeholder="TRIPLE70001"
+                required
+              />
+            </div>
+          </div>
+          {createErr ? (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {createErr}
+            </div>
+          ) : null}
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={creating}
+              className="rounded-lg bg-[#4FAEB2] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#3F8E91] disabled:opacity-50"
+            >
+              {creating ? "Guardando…" : "Crear revendedor"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowForm(false)}
+              className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+            >
+              Cancelar
+            </button>
+          </div>
+        </form>
+      ) : null}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
