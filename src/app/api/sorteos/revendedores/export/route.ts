@@ -32,6 +32,7 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url);
     const sorteoId = (url.searchParams.get("sorteo_id") ?? "").trim();
     const format = (url.searchParams.get("format") ?? "xlsx").trim().toLowerCase();
+    const revendedorFilter = (url.searchParams.get("revendedor_id") ?? "").trim();
     if (!sorteoId) return NextResponse.json(errorResponse("sorteo_id es obligatorio"), { status: 400 });
     if (format !== "xlsx" && format !== "pdf") {
       return NextResponse.json(errorResponse("format debe ser xlsx o pdf"), { status: 400 });
@@ -48,15 +49,19 @@ export async function GET(request: NextRequest) {
     const sorteoNombre = String((sorteoRow as { nombre?: string } | null)?.nombre ?? "Sorteo");
     const sorteoEstado = String((sorteoRow as { estado?: string } | null)?.estado ?? "");
 
-    const { data: revRows, error: eRev } = await sb
+    let revQuery = sb
       .from("sorteo_revendedores")
       .select("id, nombre, codigo_referido, telefono")
       .eq("empresa_id", empresaId)
-      .eq("sorteo_id", sorteoId)
-      .order("nombre", { ascending: true });
+      .eq("sorteo_id", sorteoId);
+    if (revendedorFilter) revQuery = revQuery.eq("id", revendedorFilter);
+    const { data: revRows, error: eRev } = await revQuery.order("nombre", { ascending: true });
     if (eRev) return NextResponse.json(errorResponse(eRev.message), { status: 400 });
 
     const revs = (revRows ?? []) as Array<{ id: string; nombre: string; codigo_referido: string | null; telefono: string | null }>;
+    if (revendedorFilter && revs.length === 0) {
+      return NextResponse.json(errorResponse("Revendedor no encontrado en este sorteo."), { status: 404 });
+    }
     const revById = new Map(revs.map((r) => [r.id, r]));
     const revIds = revs.map((r) => r.id);
 
@@ -126,15 +131,18 @@ export async function GET(request: NextRequest) {
     }
     revendedores.sort((a, b) => b.ventas - a.ventas || b.monto - a.monto);
 
+    const vendedorUnico = revendedorFilter && revs.length === 1 ? revs[0].nombre : null;
     const payload: RevExportPayload = {
       sorteoNombre,
       sorteoEstado,
       generadoISO: new Date().toISOString(),
       revendedores,
       detalle,
+      vendedorUnico,
     };
 
-    const baseName = `revendedores-${sorteoNombre.replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 30)}-${nowStamp()}`;
+    const namePart = vendedorUnico ? vendedorUnico : sorteoNombre;
+    const baseName = `reporte-${namePart.replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 30)}-${nowStamp()}`;
 
     if (format === "xlsx") {
       const buf = buildRevendedoresXlsx(payload);

@@ -107,15 +107,16 @@ export default function RevendedoresModulePage() {
     [reportUrl]
   );
 
-  const [downloading, setDownloading] = useState<null | "xlsx" | "pdf">(null);
+  // Descarga por revendedor: clave `${revId}:${format}` mientras genera.
+  const [downloading, setDownloading] = useState<string | null>(null);
   const downloadExport = useCallback(
-    async (format: "xlsx" | "pdf") => {
+    async (format: "xlsx" | "pdf", revendedorId: string) => {
       if (!sorteoId || downloading) return;
-      setDownloading(format);
+      setDownloading(`${revendedorId}:${format}`);
       setErr(null);
       try {
         const res = await fetchWithSupabaseSession(
-          `/api/sorteos/revendedores/export?sorteo_id=${encodeURIComponent(sorteoId)}&format=${format}`,
+          `/api/sorteos/revendedores/export?sorteo_id=${encodeURIComponent(sorteoId)}&format=${format}&revendedor_id=${encodeURIComponent(revendedorId)}`,
           { cache: "no-store" }
         );
         if (!res.ok) {
@@ -126,7 +127,7 @@ export default function RevendedoresModulePage() {
         const blob = await res.blob();
         const cd = res.headers.get("Content-Disposition") ?? "";
         const m = cd.match(/filename="([^"]+)"/);
-        const filename = m?.[1] ?? `revendedores.${format}`;
+        const filename = m?.[1] ?? `reporte.${format}`;
         const objUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = objUrl;
@@ -155,38 +156,20 @@ export default function RevendedoresModulePage() {
           <h1 className="text-xl font-bold text-slate-900">Revendedores</h1>
           <p className="text-sm text-slate-500 mt-0.5">Rendimiento por vendedor y link de reporte para compartir.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-slate-500">Sorteo</span>
-            <select
-              value={sorteoId}
-              onChange={(e) => setSorteoId(e.target.value)}
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm focus:border-[#4FAEB2] focus:outline-none"
-            >
-              {sorteos.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.nombre} {s.estado === "activo" ? "• activo" : `• ${s.estado}`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            disabled={!sorteoId || downloading !== null}
-            onClick={() => void downloadExport("xlsx")}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50"
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-slate-500">Sorteo</span>
+          <select
+            value={sorteoId}
+            onChange={(e) => setSorteoId(e.target.value)}
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm focus:border-[#4FAEB2] focus:outline-none"
           >
-            {downloading === "xlsx" ? "Generando…" : "Descargar Excel"}
-          </button>
-          <button
-            type="button"
-            disabled={!sorteoId || downloading !== null}
-            onClick={() => void downloadExport("pdf")}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-50"
-          >
-            {downloading === "pdf" ? "Generando…" : "Descargar PDF"}
-          </button>
-        </div>
+            {sorteos.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.nombre} {s.estado === "activo" ? "• activo" : `• ${s.estado}`}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* KPIs */}
@@ -259,7 +242,25 @@ export default function RevendedoresModulePage() {
                       {rev.clicks > 0 ? `${Math.round(rev.conversion * 100)}%` : "—"}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          disabled={downloading !== null}
+                          onClick={() => void downloadExport("xlsx", rev.id)}
+                          title="Descargar Excel de este vendedor (con detalle de compradores)"
+                          className="inline-flex items-center rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 transition-colors hover:bg-emerald-100 disabled:opacity-50"
+                        >
+                          {downloading === `${rev.id}:xlsx` ? "…" : "Excel"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={downloading !== null}
+                          onClick={() => void downloadExport("pdf", rev.id)}
+                          title="Descargar PDF de este vendedor (con detalle de compradores)"
+                          className="inline-flex items-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-semibold text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-50"
+                        >
+                          {downloading === `${rev.id}:pdf` ? "…" : "PDF"}
+                        </button>
                         <button
                           type="button"
                           onClick={() => void copyLink(rev)}

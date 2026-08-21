@@ -32,7 +32,13 @@ export type RevExportPayload = {
   generadoISO: string;
   revendedores: RevExportRevendedor[];
   detalle: RevExportVenta[];
+  /** Si el reporte es de un solo vendedor, su nombre (para el título). */
+  vendedorUnico?: string | null;
 };
+
+function tituloReporte(p: RevExportPayload): string {
+  return p.vendedorUnico ? `Reporte de ${p.vendedorUnico}` : "Reporte de Revendedores";
+}
 
 const TEAL = rgb(0x0b / 255, 0x3a / 255, 0x3d / 255);
 const WHITE = rgb(1, 1, 1);
@@ -70,7 +76,7 @@ export function buildRevendedoresXlsx(p: RevExportPayload): Buffer {
     r.clicks > 0 ? Math.round(r.conversion * 100) : "",
   ]);
   const wsResumen = XLSX.utils.aoa_to_sheet([
-    [`Reporte de Revendedores — ${p.sorteoNombre}`],
+    [`${tituloReporte(p)} — ${p.sorteoNombre}`],
     [`Generado: ${new Date(p.generadoISO).toLocaleString("es-PY")}`],
     [],
     resumenHeader,
@@ -130,7 +136,7 @@ export async function buildRevendedoresPdf(p: RevExportPayload): Promise<Buffer>
 
   // Encabezado con banda de marca
   page.drawRectangle({ x: 0, y: A4.h - 70, width: A4.w, height: 70, color: TEAL });
-  page.drawText("Reporte de Revendedores", { x: MARGIN, y: A4.h - 38, size: 18, font: bold, color: WHITE });
+  page.drawText(tituloReporte(p), { x: MARGIN, y: A4.h - 38, size: 18, font: bold, color: WHITE });
   page.drawText(clip(p.sorteoNombre, font, 11, A4.w - 2 * MARGIN), { x: MARGIN, y: A4.h - 56, size: 11, font, color: WHITE });
   y = A4.h - 70 - 24;
   page.drawText(`Generado: ${new Date(p.generadoISO).toLocaleString("es-PY")}`, { x: MARGIN, y, size: 8, font, color: GRAY });
