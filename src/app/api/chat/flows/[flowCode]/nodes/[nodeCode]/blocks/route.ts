@@ -84,14 +84,15 @@ export async function POST(
       sort_order?: number;
     };
     const blockType = (body.block_type ?? "").trim();
-    if (!["text", "image", "buttons"].includes(blockType)) {
+    if (!["text", "image", "video", "buttons"].includes(blockType)) {
       return NextResponse.json({ ok: false, error: "block_type inválido" }, { status: 400 });
     }
     const supabase = await getChatServiceClientForEmpresa(auth.empresa_id);
-    if (blockType === "image") {
+    if (blockType === "image" || blockType === "video") {
+      const kindLabel = blockType === "video" ? "video" : "imagen";
       const mediaUrl = (body.media_url ?? "").trim();
       if (mediaUrl && !isValidHttpUrl(mediaUrl)) {
-        return NextResponse.json({ ok: false, error: "media_url de imagen debe ser URL http/https válida" }, { status: 400 });
+        return NextResponse.json({ ok: false, error: `media_url de ${kindLabel} debe ser URL http/https válida` }, { status: 400 });
       }
       const caption = (body.content_text ?? "").trim();
       if (caption.length > 1024) {

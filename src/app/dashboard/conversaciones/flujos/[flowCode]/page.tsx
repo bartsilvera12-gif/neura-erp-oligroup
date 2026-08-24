@@ -42,7 +42,7 @@ type OptionSimpleDraft = {
 type FlowNodeBlock = {
   id: string;
   node_id: string;
-  block_type: "text" | "image" | "buttons";
+  block_type: "text" | "image" | "video" | "buttons";
   content_text: string | null;
   media_url: string | null;
   sort_order: number;
@@ -188,9 +188,11 @@ function prettifyCode(code: string): string {
 
 function friendlyNodeTitle(node: FlowNode): string {
   if (node.node_type === "media") {
-    const mediaCaption = node.blocks.find((b) => b.block_type === "image")?.content_text?.trim();
-    if (mediaCaption) return `Mensaje con imagen: ${mediaCaption.slice(0, 24)}${mediaCaption.length > 24 ? "..." : ""}`;
-    return "Mensaje con imagen";
+    const mediaBlock = node.blocks.find((b) => b.block_type === "image" || b.block_type === "video");
+    const kind = mediaBlock?.block_type === "video" ? "video" : "imagen";
+    const mediaCaption = mediaBlock?.content_text?.trim();
+    if (mediaCaption) return `Mensaje con ${kind}: ${mediaCaption.slice(0, 24)}${mediaCaption.length > 24 ? "..." : ""}`;
+    return `Mensaje con ${kind}`;
   }
   const txt = node.message_text?.trim();
   if (txt) return txt.slice(0, 42) + (txt.length > 42 ? "..." : "");
@@ -457,8 +459,9 @@ export default function FlowEditorPage() {
     );
   }
 
-  function getImageBlock(node: FlowNode): FlowNodeBlock | undefined {
-    return node.blocks.find((b) => b.block_type === "image");
+  /** Bloque visual del nodo `media`: puede ser imagen o video. */
+  function getMediaBlock(node: FlowNode): FlowNodeBlock | undefined {
+    return node.blocks.find((b) => b.block_type === "image" || b.block_type === "video");
   }
 
   function getTextPreview(node: FlowNode): string {
@@ -675,14 +678,15 @@ export default function FlowEditorPage() {
   async function saveNode(node: FlowNode) {
     setError(null);
     if (node.node_type === "media") {
-      const mediaBlock = getImageBlock(node);
+      const mediaBlock = getMediaBlock(node);
       const mediaUrl = mediaBlock?.media_url?.trim() ?? "";
       const captionSize = (mediaBlock?.content_text ?? "").trim().length;
+      const mediaKind = mediaBlock?.block_type === "video" ? "video" : "imagen";
       if (!mediaBlock) {
-        throw new Error("Este nodo requiere configurar una imagen antes de guardar.");
+        throw new Error("Este nodo requiere configurar una imagen o un video antes de guardar.");
       }
       if (!mediaUrl || !isValidHttpUrl(mediaUrl)) {
-        throw new Error("El nodo 'Mensaje con imagen' requiere una URL válida de imagen.");
+        throw new Error(`El nodo 'Mensaje con ${mediaKind}' requiere una URL válida de ${mediaKind}.`);
       }
       if (captionSize > MAX_WHATSAPP_IMAGE_CAPTION) {
         throw new Error(`El caption supera ${MAX_WHATSAPP_IMAGE_CAPTION} caracteres.`);
@@ -1032,7 +1036,7 @@ export default function FlowEditorPage() {
       credentials: "same-origin",
     });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; media_url?: string };
-    if (!res.ok || !json.ok || !json.media_url) throw new Error(json.error ?? "No se pudo subir imagen");
+    if (!res.ok || !json.ok || !json.media_url) throw new Error(json.error ?? "No se pudo subir el archivo");
     return json.media_url;
   }
 
@@ -1584,19 +1588,61 @@ export default function FlowEditorPage() {
 
               {node.node_type === "media" && (
                 <div className="border border-fuchsia-100 rounded-lg p-4 space-y-3 bg-white shadow-sm ring-1 ring-fuchsia-100/80">
-                  <div className="text-sm font-semibold text-fuchsia-800">Mensaje con imagen</div>
+                  <div className="text-sm font-semibold text-fuchsia-800">Mensaje con imagen o video</div>
                   <p className="text-xs text-slate-600">
-                    WhatsApp envía una sola burbuja: imagen arriba y texto opcional debajo (caption).
+                    WhatsApp envía una sola burbuja: imagen o video arriba y texto opcional debajo (caption).
                   </p>
-                  {getImageBlock(node) ? (
+                  {getMediaBlock(node) ? (
                     (() => {
-                      const mediaBlock = getImageBlock(node)!;
+                      const mediaBlock = getMediaBlock(node)!;
+                      const isVideoBlock = mediaBlock.block_type === "video";
                       return (
                         <div className="space-y-2">
-                          <label className="block text-xs text-slate-500 mb-1">Imagen / URL de imagen</label>
+                          <div className="inline-flex overflow-hidden rounded-lg border border-slate-200">
+                            {(["image", "video"] as const).map((t) => (
+                              <button
+                                key={t}
+                                type="button"
+                                onClick={() => {
+                                  if (mediaBlock.block_type === t) return;
+                                  /* Cambiar de tipo invalida la URL anterior (una imagen no sirve como video). */
+                                  setNodes((prev) =>
+                                    prev.map((n) =>
+                                      n.id !== node.id
+                                        ? n
+                                        : {
+                                            ...n,
+                                            blocks: n.blocks.map((b) =>
+                                              b.id === mediaBlock.id ? { ...b, block_type: t, media_url: "" } : b
+                                            ),
+                                          }
+                                    )
+                                  );
+                                }}
+                                className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                                  mediaBlock.block_type === t
+                                    ? "bg-fuchsia-600 text-white"
+                                    : "bg-white text-slate-600 hover:bg-slate-50"
+                                }`}
+                              >
+                                {t === "image" ? "Imagen" : "Video"}
+                              </button>
+                            ))}
+                          </div>
+                          {isVideoBlock && (
+                            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                              Video: MP4 con códec H.264 y audio AAC, máximo 16 MB (recomendado 5–8 MB para que
+                              cargue rápido con datos móviles). El primer frame se usa como miniatura: poné ahí el
+                              precio y la fecha. Si el envío falla, el bot manda el texto de abajo solo, para no
+                              dejar al cliente sin respuesta.
+                            </p>
+                          )}
+                          <label className="block text-xs text-slate-500 mb-1">
+                            {isVideoBlock ? "Video / URL de video" : "Imagen / URL de imagen"}
+                          </label>
                           <input
                             type="file"
-                            accept="image/*"
+                            accept={isVideoBlock ? "video/mp4,video/3gpp" : "image/*"}
                             onChange={async (e) => {
                               try {
                                 const file = e.target.files?.[0];
@@ -1615,7 +1661,7 @@ export default function FlowEditorPage() {
                                   )
                                 );
                               } catch (err) {
-                                setError(err instanceof Error ? err.message : "No se pudo subir imagen");
+                                setError(err instanceof Error ? err.message : "No se pudo subir el archivo");
                               } finally {
                                 e.target.value = "";
                               }
@@ -1644,12 +1690,28 @@ export default function FlowEditorPage() {
                           {!!mediaBlock.media_url && !isValidHttpUrl(mediaBlock.media_url) && (
                             <div className="text-[11px] text-red-600">La URL debe iniciar con http:// o https://</div>
                           )}
+                          {!!mediaBlock.media_url && isValidHttpUrl(mediaBlock.media_url) && (
+                            isVideoBlock ? (
+                              <video
+                                src={mediaBlock.media_url}
+                                controls
+                                preload="metadata"
+                                className="max-h-48 rounded border border-slate-200"
+                              />
+                            ) : (
+                              <img
+                                src={mediaBlock.media_url}
+                                alt="preview"
+                                className="max-h-48 rounded border border-slate-200"
+                              />
+                            )
+                          )}
 
                           <label className="block text-xs text-slate-500 mb-1 mt-2">Texto del mensaje (opcional)</label>
                           <textarea
                             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm min-h-[70px]"
                             value={mediaBlock.content_text ?? ""}
-                            placeholder="Escribí un texto opcional para mostrar debajo de la imagen"
+                            placeholder={`Escribí un texto opcional para mostrar debajo ${isVideoBlock ? "del video" : "de la imagen"}`}
                             onChange={(e) =>
                               setNodes((prev) =>
                                 prev.map((n) =>
@@ -1760,10 +1822,11 @@ export default function FlowEditorPage() {
               <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/80 text-sm text-slate-700">
                 {node.node_type === "media" ? (
                   (() => {
-                    const mediaBlock = getImageBlock(node);
+                    const mediaBlock = getMediaBlock(node);
                     const mediaUrl = mediaBlock?.media_url?.trim() ?? "";
                     const validUrl = Boolean(mediaUrl && isValidHttpUrl(mediaUrl));
                     const caption = mediaBlock?.content_text?.trim() ?? "";
+                    const previewIsVideo = mediaBlock?.block_type === "video";
                     return (
                       <div className="space-y-2">
                         <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
@@ -1771,20 +1834,29 @@ export default function FlowEditorPage() {
                         </div>
                         {validUrl ? (
                           <div className="space-y-2">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={mediaUrl}
-                              alt="Vista previa"
-                              className="max-h-40 w-auto rounded-lg border border-slate-200 bg-white shadow-sm"
-                            />
+                            {previewIsVideo ? (
+                              <video
+                                src={mediaUrl}
+                                controls
+                                preload="metadata"
+                                className="max-h-40 w-auto rounded-lg border border-slate-200 bg-black shadow-sm"
+                              />
+                            ) : (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img
+                                src={mediaUrl}
+                                alt="Vista previa"
+                                className="max-h-40 w-auto rounded-lg border border-slate-200 bg-white shadow-sm"
+                              />
+                            )}
                             <p className="text-sm text-slate-800 whitespace-pre-wrap">
-                              {caption || "Sin texto bajo la imagen"}
+                              {caption || `Sin texto bajo ${previewIsVideo ? "el video" : "la imagen"}`}
                             </p>
                           </div>
                         ) : (
                           <p className="text-sm text-slate-500 border border-dashed border-slate-200 rounded-lg px-3 py-3 bg-white/80">
                             {mediaBlock
-                              ? "Pegá o subí una imagen con URL https válida en el recuadro de arriba para ver la previsualización."
+                              ? `Pegá o subí ${previewIsVideo ? "un video" : "una imagen"} con URL https válida en el recuadro de arriba para ver la previsualización.`
                               : "Usá el botón «Configurar imagen y texto» y luego la URL o el archivo: la vista previa se actualiza con lo mismo que se envía al guardar el paso."}
                           </p>
                         )}
@@ -1939,17 +2011,18 @@ export default function FlowEditorPage() {
                 {node.blocks.length === 0 && (
                   <div className="text-xs text-slate-500">
                     {node.node_type === "media"
-                      ? "Este nodo necesita un bloque de imagen con URL válida."
+                      ? "Este nodo necesita un bloque de imagen o video con URL válida."
                       : "Sin bloques. Se usará el mensaje de compatibilidad."}
                   </div>
                 )}
-                {node.node_type === "media" && node.blocks.some((b) => b.block_type !== "image") && (
-                  <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                    Este nodo usa solo bloques de imagen; los demás bloques se ignoran en la vista.
-                  </div>
-                )}
+                {node.node_type === "media" &&
+                  node.blocks.some((b) => b.block_type !== "image" && b.block_type !== "video") && (
+                    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                      Este nodo usa solo bloques de imagen o video; los demás bloques se ignoran en la vista.
+                    </div>
+                  )}
                 {(node.node_type === "media"
-                  ? node.blocks.filter((b) => b.block_type === "image")
+                  ? node.blocks.filter((b) => b.block_type === "image" || b.block_type === "video")
                   : node.blocks
                 ).map((block, bi) => (
                   <div key={block.id} className="bg-white border border-slate-200 rounded-lg p-3 space-y-2">
@@ -1999,7 +2072,7 @@ export default function FlowEditorPage() {
                             const mediaUrl = await uploadImage(file);
                             setNodes((prev) => prev.map((n) => n.id !== node.id ? n : ({ ...n, blocks: n.blocks.map((b) => b.id === block.id ? { ...b, media_url: mediaUrl } : b) })));
                           } catch (err) {
-                            setError(err instanceof Error ? err.message : "No se pudo subir imagen");
+                            setError(err instanceof Error ? err.message : "No se pudo subir el archivo");
                           } finally {
                             e.target.value = "";
                           }
@@ -2025,6 +2098,46 @@ export default function FlowEditorPage() {
                         {block.media_url && <img src={block.media_url} alt="preview" className="max-h-40 rounded border border-slate-200" />}
                       </div>
                     )}
+                    {block.block_type === "video" && (
+                      <div className="space-y-2">
+                        <p className="text-[11px] text-slate-500">
+                          Subí un MP4 (H.264 + AAC, máx. 16 MB) o pegá una URL pública (http/https).
+                        </p>
+                        <input type="file" accept="video/mp4,video/3gpp" onChange={async (e) => {
+                          try {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            const mediaUrl = await uploadImage(file);
+                            setNodes((prev) => prev.map((n) => n.id !== node.id ? n : ({ ...n, blocks: n.blocks.map((b) => b.id === block.id ? { ...b, media_url: mediaUrl } : b) })));
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : "No se pudo subir el archivo");
+                          } finally {
+                            e.target.value = "";
+                          }
+                        }} className="text-xs" />
+                        <input
+                          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                          value={block.media_url ?? ""}
+                          placeholder="URL pública de video"
+                          onChange={(e) => setNodes((prev) => prev.map((n) => n.id !== node.id ? n : ({ ...n, blocks: n.blocks.map((b) => b.id === block.id ? { ...b, media_url: e.target.value } : b) })))}
+                        />
+                        {!!block.media_url && !isValidHttpUrl(block.media_url) && (
+                          <div className="text-[11px] text-red-600">La URL debe iniciar con http:// o https://</div>
+                        )}
+                        <input
+                          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                          value={block.content_text ?? ""}
+                          placeholder="Caption opcional"
+                          onChange={(e) => setNodes((prev) => prev.map((n) => n.id !== node.id ? n : ({ ...n, blocks: n.blocks.map((b) => b.id === block.id ? { ...b, content_text: e.target.value } : b) })))}
+                        />
+                        <div className={`text-[11px] ${(block.content_text ?? "").length > MAX_WHATSAPP_IMAGE_CAPTION ? "text-red-600" : "text-slate-500"}`}>
+                          Caption: {(block.content_text ?? "").length}/{MAX_WHATSAPP_IMAGE_CAPTION}
+                        </div>
+                        {!!block.media_url && isValidHttpUrl(block.media_url) && (
+                          <video src={block.media_url} controls preload="metadata" className="max-h-40 rounded border border-slate-200" />
+                        )}
+                      </div>
+                    )}
                     {block.block_type === "buttons" && (
                       <input
                         className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
@@ -2038,11 +2151,12 @@ export default function FlowEditorPage() {
                         const latestNode = nodes.find((n) => n.id === node.id);
                         const latestBlock = latestNode?.blocks.find((b) => b.id === block.id);
                         if (!latestBlock) return;
-                        if (latestBlock.block_type === "image") {
+                        if (latestBlock.block_type === "image" || latestBlock.block_type === "video") {
+                          const kindLabel = latestBlock.block_type === "video" ? "video" : "imagen";
                           const mediaUrl = latestBlock.media_url?.trim() ?? "";
                           const caption = latestBlock.content_text?.trim() ?? "";
                           if (mediaUrl && !isValidHttpUrl(mediaUrl)) {
-                            throw new Error("La URL de imagen debe ser http/https.");
+                            throw new Error(`La URL de ${kindLabel} debe ser http/https.`);
                           }
                           if (caption.length > MAX_WHATSAPP_IMAGE_CAPTION) {
                             throw new Error(`El caption supera ${MAX_WHATSAPP_IMAGE_CAPTION} caracteres.`);

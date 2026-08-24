@@ -21,6 +21,7 @@ import {
   sendWhatsAppChoiceMessage,
   sendWhatsAppImage,
   sendWhatsAppInteractiveButtons,
+  sendWhatsAppVideo,
   WA_META_LIST_ROW_TITLE_MAX,
   WA_META_REPLY_TITLE_MAX,
 } from "@/lib/chat/whatsapp-send-service";
@@ -163,7 +164,7 @@ type FlowNode = {
 type FlowNodeBlock = {
   id: string;
   node_id: string;
-  block_type: "text" | "image" | "buttons";
+  block_type: "text" | "image" | "video" | "buttons";
   content_text: string | null;
   media_url: string | null;
   sort_order: number;
@@ -214,6 +215,16 @@ export type FlowEngineContext = {
 
 const CHAT_MEDIA_BUCKET = "chat-media";
 let chatMediaBucketChecked = false;
+
+/**
+ * Detecta si una URL apunta a un video por su extension (ignora query/hash).
+ * Solo se usa en el nodo `media` legacy, donde la URL viene en `message_text`
+ * y no hay block_type que indique el tipo. Con bloques manda el block_type.
+ */
+function looksLikeVideoUrl(url: string): boolean {
+  const path = url.split("?")[0].split("#")[0].toLowerCase();
+  return /.(mp4|3gp|3gpp|mov|m4v)$/.test(path);
+}
 
 function extensionFromMime(mimeType: string | null | undefined): string {
   if (!mimeType) return "jpg";
@@ -1706,38 +1717,52 @@ export function createFlowEngine(ctx: FlowEngineContext) {
           });
         }
       } else if (node.node_type === "media") {
+        const mediaFromLegacyText = node.message_text?.trim() || "";
+        const isVideoLegacy = looksLikeVideoUrl(mediaFromLegacyText);
         if (ctxSend.provider !== "meta") {
           return {
             ok: false,
-            error: ycloudOutboundUnsupportedMessage("imagen"),
+            error: ycloudOutboundUnsupportedMessage(isVideoLegacy ? "video" : "imagen"),
           };
         }
-        const imageFromLegacyText = node.message_text?.trim() || "";
-        if (!imageFromLegacyText) {
+        if (!mediaFromLegacyText) {
           return {
             ok: false,
-            error: `Nodo media "${node.node_code}" sin imagen configurada en bloques ni mensaje legacy`,
+            error: `Nodo media "${node.node_code}" sin imagen ni video configurado en bloques ni mensaje legacy`,
           };
         }
-        const send = await sendWhatsAppImage({
-          toDigits: ctxSend.toDigits,
-          phoneNumberId: ctxSend.phoneNumberId,
-          accessToken: ctxSend.token,
-          imageUrl: imageFromLegacyText,
-        });
+        const send = isVideoLegacy
+          ? await sendWhatsAppVideo({
+              toDigits: ctxSend.toDigits,
+              phoneNumberId: ctxSend.phoneNumberId,
+              accessToken: ctxSend.token,
+              videoUrl: mediaFromLegacyText,
+            })
+          : await sendWhatsAppImage({
+              toDigits: ctxSend.toDigits,
+              phoneNumberId: ctxSend.phoneNumberId,
+              accessToken: ctxSend.token,
+              imageUrl: mediaFromLegacyText,
+            });
         if (!send.ok) {
-          console.warn("[flow-send]", "whatsapp_image_failed_legacy_media_node", {
-            conversationId: state.id,
-            node_code: node.node_code,
-            error: send.error,
-          });
+          console.warn(
+            "[flow-send]",
+            isVideoLegacy
+              ? "whatsapp_video_failed_legacy_media_node"
+              : "whatsapp_image_failed_legacy_media_node",
+            {
+              conversationId: state.id,
+              node_code: node.node_code,
+              error: send.error,
+            }
+          );
           return { ok: false, error: send.error };
         }
 
         await persistOutgoingMessage({
           conversation: state,
-          content: `Imagen enviada\n${imageFromLegacyText}`,
-          messageType: "image",
+          content: `${isVideoLegacy ? "Video enviado" : "Imagen enviada"}\n${mediaFromLegacyText}`,
+          messageType: isVideoLegacy ? "video" : "image",
           waMessageId: send.waMessageId,
           raw: send.raw,
           senderType: "system",
@@ -1864,6 +1889,69 @@ export function createFlowEngine(ctx: FlowEngineContext) {
           conversation: state,
           content: `${imageLabel}\n${imageUrl}`,
           messageType: "image",
+          waMessageId: send.waMessageId,
+          raw: send.raw,
+          senderType: "system",
+          automationSource: "flow_engine",
+        });
+        continue;
+      }
+      if (block.block_type === "video") {
+        if (ctxSend.provider !== "meta") {
+          return { ok: false, error: ycloudOutboundUnsupportedMessage("video") };
+        }
+        const videoUrl = block.media_url?.trim();
+        if (!videoUrl) continue;
+        const captionRaw = block.content_text?.trim() || "";
+        const caption = captionRaw ? interpolateTemplate(captionRaw, flowVars) : undefined;
+        const send = await sendWhatsAppVideo({
+          toDigits: ctxSend.toDigits,
+          phoneNumberId: ctxSend.phoneNumberId,
+          accessToken: ctxSend.token,
+          videoUrl,
+          caption,
+        });
+        if (!send.ok) {
+          /*
+           * El video falla mucho mas seguido que una imagen: peso (>16MB), codec no
+           * soportado (Meta exige H.264+AAC) o timeout bajando el archivo desde el
+           * storage. En el mensaje de bienvenida, cortar aca dejaria al cliente sin
+           * NINGUNA respuesta, asi que degradamos a texto y seguimos el flujo.
+           */
+          console.warn("[flow-send]", "whatsapp_video_failed_block", {
+            conversationId: state.id,
+            node_code: node.node_code,
+            error: send.error,
+            videoUrlPreview: videoUrl.slice(0, 96),
+          });
+          await insertFlowEvent({
+            empresaId: state.empresa_id,
+            conversationId: state.id,
+            flowCode: state.flow_code,
+            nodeCode: node.node_code,
+            flowSessionId: state.active_flow_session_id,
+            eventType: "video_fallback_text",
+            payload: { error: send.error ?? "unknown", video_url: videoUrl.slice(0, 200) },
+          });
+          if (!caption) continue;
+          const fallback = await flowSendText(ctxSend, caption);
+          if (!fallback.ok) return { ok: false, error: fallback.error };
+          await persistOutgoingMessage({
+            conversation: state,
+            content: caption,
+            messageType: "text",
+            waMessageId: fallback.waMessageId,
+            raw: fallback.raw,
+            senderType: "system",
+            automationSource: "flow_engine",
+          });
+          continue;
+        }
+        const videoLabel = caption ? `Video enviado: ${caption}` : "Video enviado";
+        await persistOutgoingMessage({
+          conversation: state,
+          content: `${videoLabel}\n${videoUrl}`,
+          messageType: "video",
           waMessageId: send.waMessageId,
           raw: send.raw,
           senderType: "system",

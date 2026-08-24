@@ -158,7 +158,7 @@ export async function PATCH(
         .select("media_url")
         .eq("empresa_id", auth.empresa_id)
         .eq("node_id", currentNode.id)
-        .eq("block_type", "image")
+        .in("block_type", ["image", "video"])
         .order("sort_order", { ascending: true });
       if (blockErr) return NextResponse.json({ ok: false, error: blockErr.message }, { status: 400 });
       const hasAnyValidMediaUrl = (mediaBlocks ?? []).some((block) => {
@@ -167,7 +167,7 @@ export async function PATCH(
       });
       if (!hasAnyValidMediaUrl) {
         return NextResponse.json(
-          { ok: false, error: "Nodo media requiere un bloque de imagen con URL válida (http/https)." },
+          { ok: false, error: "Nodo media requiere un bloque de imagen o video con URL válida (http/https)." },
           { status: 400 }
         );
       }

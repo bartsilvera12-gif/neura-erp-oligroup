@@ -28,7 +28,7 @@ export async function PATCH(
       sort_order?: number;
     };
     const patch: Record<string, unknown> = {};
-    if (typeof body.block_type === "string" && ["text", "image", "buttons"].includes(body.block_type)) {
+    if (typeof body.block_type === "string" && ["text", "image", "video", "buttons"].includes(body.block_type)) {
       patch.block_type = body.block_type;
     }
     if ("content_text" in body) patch.content_text = body.content_text ?? null;
@@ -52,11 +52,12 @@ export async function PATCH(
 
     const effectiveType =
       (typeof patch.block_type === "string" ? patch.block_type : (current.block_type as string)) || "text";
-    if (effectiveType === "image") {
+    if (effectiveType === "image" || effectiveType === "video") {
+      const kindLabel = effectiveType === "video" ? "video" : "imagen";
       const mediaUrl = (patch.media_url as string | null | undefined)?.trim() ?? "";
       if (mediaUrl && !isValidHttpUrl(mediaUrl)) {
         return NextResponse.json(
-          { ok: false, error: "media_url de imagen debe ser URL http/https válida" },
+          { ok: false, error: `media_url de ${kindLabel} debe ser URL http/https válida` },
           { status: 400 }
         );
       }
