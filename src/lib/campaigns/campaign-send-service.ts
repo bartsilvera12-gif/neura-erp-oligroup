@@ -271,7 +271,7 @@ export async function sendCampaignRecipientMessage(params: {
       return {
         ok: false,
         error:
-          "Falta header_image_url válida (https) en la campaña. Validá el Excel y la configuración antes de enviar.",
+          "Falta la URL de cabecera válida (https) en la campaña. Validá el Excel y la configuración antes de enviar.",
       };
     }
   }

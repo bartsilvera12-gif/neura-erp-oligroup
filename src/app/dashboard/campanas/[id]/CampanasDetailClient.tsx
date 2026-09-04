@@ -229,15 +229,17 @@ export default function CampanasDetailClient({
     });
   }, [campaign, mapping, placeholderSlots, recipients]);
 
-  const templateHasHeaderImage = useMemo(() => {
+  const headerMediaFormat = useMemo(() => {
     const vs = campaign?.template_components_json as unknown;
-    if (!vs || !Array.isArray(vs)) return false;
-    return (vs as { type?: string; format?: string }[]).some(
-      (c) =>
-        String(c.type ?? "").toUpperCase() === "HEADER" &&
-        String(c.format ?? "").toUpperCase() === "IMAGE"
-    );
+    if (!vs || !Array.isArray(vs)) return null;
+    for (const c of vs as { type?: string; format?: string }[]) {
+      if (String(c.type ?? "").toUpperCase() !== "HEADER") continue;
+      const fmt = String(c.format ?? "").toUpperCase();
+      if (fmt === "IMAGE" || fmt === "VIDEO" || fmt === "DOCUMENT") return fmt;
+    }
+    return null;
   }, [campaign]);
+  const templateHasHeaderImage = headerMediaFormat !== null;
 
   const headerImageError =
     typeof campaign?.send_config_json?.header_image_error === "string"
@@ -732,9 +734,20 @@ export default function CampanasDetailClient({
         <p className="text-xs text-slate-500">Formatos .xlsx / .xls / .csv · Máximo 5.000 filas / 5 MB.</p>
         {templateHasHeaderImage ? (
           <p className="text-xs text-slate-600">
-            <strong>Imagen de cabecera (Meta):</strong> agregá una columna <code className="rounded bg-slate-100 px-1">header_image_url</code>{" "}
-            en el Excel con una URL <strong>https</strong> pública. En esta fase todas las filas válidas deben usar la
-            misma URL.
+            <strong>
+              {headerMediaFormat === "VIDEO"
+                ? "Video de cabecera (Meta):"
+                : headerMediaFormat === "DOCUMENT"
+                  ? "Documento de cabecera (Meta):"
+                  : "Imagen de cabecera (Meta):"}
+            </strong>{" "}
+            agregá una columna{" "}
+            <code className="rounded bg-slate-100 px-1">
+              {headerMediaFormat === "VIDEO" ? "header_video_url" : "header_image_url"}
+            </code>{" "}
+            en el Excel con una URL <strong>https</strong> pública
+            {headerMediaFormat === "VIDEO" ? " a un archivo .mp4" : ""}. En esta fase todas las filas válidas deben usar
+            la misma URL.
           </p>
         ) : null}
       </section>
