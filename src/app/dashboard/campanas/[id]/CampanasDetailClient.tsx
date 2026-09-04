@@ -104,6 +104,11 @@ export default function CampanasDetailClient({
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // UX de importacion: feedback visual mientras sube/valida el Excel.
+  const [importing, setImporting] = useState(false);
+  const [importedFileName, setImportedFileName] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [showEvents, setShowEvents] = useState(false);
 
@@ -386,20 +391,29 @@ export default function CampanasDetailClient({
 
   async function uploadFile(file: File) {
     setBusy(true);
+    setImporting(true);
     setErr(null);
+    setImportedFileName(null);
     const fd = new FormData();
     fd.append("file", file);
-    const res = await fetchWithSupabaseSession(`/api/campanas/${campaignId}/import`, {
-      method: "POST",
-      body: fd,
-    });
-    const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
-    setBusy(false);
-    if (!res.ok || !json.success) {
-      setErr(json.error ?? "Importación fallida");
-      return;
+    try {
+      const res = await fetchWithSupabaseSession(`/api/campanas/${campaignId}/import`, {
+        method: "POST",
+        body: fd,
+      });
+      const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!res.ok || !json.success) {
+        setErr(json.error ?? "Importación fallida");
+        return;
+      }
+      setImportedFileName(file.name);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Importación fallida");
+    } finally {
+      setBusy(false);
+      setImporting(false);
     }
-    await load();
   }
 
   async function saveMapping() {
@@ -608,16 +622,114 @@ export default function CampanasDetailClient({
           </h2>
         </div>
         <input
+          ref={fileInputRef}
           type="file"
           accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           disabled={!canImport || busy}
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) void uploadFile(f);
+            // Permite volver a elegir el MISMO archivo (onChange no dispara si el value no cambia).
+            e.target.value = "";
           }}
-          className="block text-sm text-slate-600"
+          className="hidden"
         />
-        <p className="text-xs text-slate-500">Máximo 5.000 filas / 5 MB.</p>
+
+        <div
+          role="button"
+          tabIndex={canImport && !busy ? 0 : -1}
+          aria-disabled={!canImport || busy}
+          onClick={() => {
+            if (!canImport || busy) return;
+            fileInputRef.current?.click();
+          }}
+          onKeyDown={(e) => {
+            if ((e.key === "Enter" || e.key === " ") && canImport && !busy) {
+              e.preventDefault();
+              fileInputRef.current?.click();
+            }
+          }}
+          onDragOver={(e) => {
+            if (!canImport || busy) return;
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            if (!canImport || busy) return;
+            const f = e.dataTransfer.files?.[0];
+            if (f) void uploadFile(f);
+          }}
+          className={`flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed px-6 py-8 text-center transition-colors ${
+            !canImport || busy
+              ? "cursor-not-allowed border-slate-200 bg-slate-50/60 opacity-70"
+              : dragOver
+                ? "cursor-pointer border-[#4FAEB2] bg-[#4FAEB2]/10"
+                : "cursor-pointer border-slate-300 bg-slate-50/40 hover:border-[#4FAEB2]/70 hover:bg-[#4FAEB2]/[0.06]"
+          }`}
+        >
+          {importing ? (
+            <>
+              <svg className="h-9 w-9 animate-spin text-[#4FAEB2]" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-90" fill="currentColor" d="M12 2a10 10 0 0 1 10 10h-4a6 6 0 0 0-6-6V2z" />
+              </svg>
+              <div>
+                <p className="text-sm font-semibold text-[#3F8E91]">Cargando y validando la base…</p>
+                <p className="mt-0.5 text-xs text-slate-500">Estamos leyendo las filas del archivo. No cierres esta ventana.</p>
+              </div>
+            </>
+          ) : importedFileName || recipients.length > 0 ? (
+            <>
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M20 6 9 17l-5-5" />
+                </svg>
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">
+                  {importedFileName ? (
+                    <>Base cargada: <span className="font-mono text-slate-600">{importedFileName}</span></>
+                  ) : (
+                    <>Base ya cargada</>
+                  )}
+                </p>
+                <p className="mt-0.5 text-xs text-emerald-700">
+                  {recipients.length.toLocaleString("es-PY")} destinatario{recipients.length === 1 ? "" : "s"} en el archivo.
+                </p>
+              </div>
+              <span className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm">
+                Cambiar archivo
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[#4FAEB2]/12 text-[#4FAEB2]">
+                <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <path d="M17 8l-5-5-5 5" />
+                  <path d="M12 3v12" />
+                </svg>
+              </span>
+              <div>
+                <p className="text-sm font-semibold text-slate-800">Subí tu Excel o CSV</p>
+                <p className="mt-0.5 text-xs text-slate-500">Arrastrá el archivo acá o hacé clic para elegirlo.</p>
+              </div>
+              <span className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-[#4FAEB2] px-4 py-2 text-xs font-semibold text-white shadow-sm shadow-[#4FAEB2]/25">
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <path d="M17 8l-5-5-5 5" />
+                  <path d="M12 3v12" />
+                </svg>
+                Subir Excel
+              </span>
+            </>
+          )}
+        </div>
+
+        <p className="text-xs text-slate-500">Formatos .xlsx / .xls / .csv · Máximo 5.000 filas / 5 MB.</p>
         {templateHasHeaderImage ? (
           <p className="text-xs text-slate-600">
             <strong>Imagen de cabecera (Meta):</strong> agregá una columna <code className="rounded bg-slate-100 px-1">header_image_url</code>{" "}
