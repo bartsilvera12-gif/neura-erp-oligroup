@@ -101,6 +101,61 @@ export type SorteoCuponesServerResult = {
   transient_error?: boolean;
 };
 
+export type SorteoOption = {
+  id: string;
+  nombre: string;
+  estado: string;
+  fecha_sorteo: string | null;
+  created_at: string | null;
+};
+
+/**
+ * Lista liviana de sorteos (para el selector de la pestaña Cupones).
+ * Server-side; usa el mismo cliente que el resto (PG shim en single_client / PostgREST si expuesto).
+ */
+export async function fetchSorteosListServer(): Promise<{
+  empresaId: string | null;
+  sorteos: SorteoOption[];
+}> {
+  const empresaId = await getEmpresaIdForCurrentUserServer();
+  if (!empresaId) return { empresaId: null, sorteos: [] };
+  try {
+    const sb = await getChatServiceClientForEmpresa(empresaId);
+    const { data, error } = await sb
+      .from("sorteos")
+      .select("id, nombre, estado, fecha_sorteo, created_at")
+      .eq("empresa_id", empresaId)
+      .order("created_at", { ascending: false });
+    if (error || !Array.isArray(data)) return { empresaId, sorteos: [] };
+    const sorteos: SorteoOption[] = (data as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id),
+      nombre: typeof r.nombre === "string" ? r.nombre : "",
+      estado: typeof r.estado === "string" ? r.estado : "activo",
+      fecha_sorteo: r.fecha_sorteo != null ? String(r.fecha_sorteo) : null,
+      created_at: r.created_at != null ? String(r.created_at) : null,
+    }));
+    return { empresaId, sorteos };
+  } catch {
+    return { empresaId, sorteos: [] };
+  }
+}
+
+/**
+ * Sorteo "actual" por defecto: primero el más reciente con estado='activo';
+ * si no hay activo, el más reciente. Recencia por fecha_sorteo y, en su defecto, created_at.
+ */
+export function pickDefaultSorteoId(sorteos: SorteoOption[]): string | null {
+  if (!sorteos.length) return null;
+  const recency = (s: SorteoOption): number => {
+    const t = s.fecha_sorteo ?? s.created_at;
+    const n = t ? Date.parse(t) : NaN;
+    return Number.isFinite(n) ? n : 0;
+  };
+  const sorted = [...sorteos].sort((a, b) => recency(b) - recency(a));
+  const activo = sorted.find((s) => s.estado === "activo");
+  return (activo ?? sorted[0]).id;
+}
+
 /** `tableAlias` ej. `se` cuando la FROM usa `FROM … se`. */
 function buildEntradaWhereParts(
   empresaId: string,

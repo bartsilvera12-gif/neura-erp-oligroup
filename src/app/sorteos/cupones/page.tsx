@@ -2,13 +2,14 @@ import Link from "next/link";
 import { Suspense } from "react";
 import {
   fetchSorteoCuponesOrdenesServer,
+  fetchSorteosListServer,
+  pickDefaultSorteoId,
   type SorteoEntradasListParams,
 } from "@/lib/sorteos/server-queries";
 import type { SorteoEntradaEstadoPago } from "@/lib/sorteos/types";
 import SorteoCuponesEstadoPagoFilter from "@/components/sorteos/SorteoCuponesEstadoPagoFilter";
 import SorteosCuponesManualClient from "@/components/sorteos/SorteosCuponesManualClient";
-import SorteoCuponesPagoCell from "@/components/sorteos/SorteoCuponesPagoCell";
-import SorteoCuponesImpresionCell from "@/components/sorteos/SorteoCuponesImpresionCell";
+import SorteoCuponesBatchPrintClient from "@/components/sorteos/SorteoCuponesBatchPrintClient";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,24 +41,6 @@ function buildQuery(
   return s ? `?${s}` : "";
 }
 
-function formatGs(n: number) {
-  return `${n.toLocaleString("es-PY")} ₲`;
-}
-
-function formatFecha(iso: string) {
-  try {
-    return new Date(iso).toLocaleString("es-PY", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
-
 export default async function SorteoCuponesPage({
   searchParams,
 }: {
@@ -74,11 +57,19 @@ export default async function SorteoCuponesPage({
       ? estadoRaw
       : undefined;
 
+  // Selector de sorteo: por defecto el sorteo actual (activo más reciente) para no
+  // escanear todo el histórico. `all` = ver todos (opt-in explícito).
+  const { sorteos } = await fetchSorteosListServer();
+  const defaultSorteoId = pickDefaultSorteoId(sorteos);
+  const selectedSorteoId =
+    sorteoId === "all" ? null : sorteoId ?? defaultSorteoId ?? null;
+  const selectValue = sorteoId === "all" ? "all" : sorteoId ?? defaultSorteoId ?? "all";
+
   const listParams: SorteoEntradasListParams = {
     page,
     limit: 50,
     q: q ?? null,
-    sorteoId: sorteoId ?? null,
+    sorteoId: selectedSorteoId,
     estadoPago: estadoPago ?? null,
   };
 
@@ -173,13 +164,20 @@ export default async function SorteoCuponesPage({
             />
           </label>
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Sorteo (UUID)</span>
-            <input
+            <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Sorteo</span>
+            <select
               name="sorteo_id"
-              defaultValue={sorteoId ?? ""}
-              placeholder="opcional"
-              className="w-[260px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-900 shadow-sm transition-colors placeholder:text-slate-400 hover:border-[#4FAEB2]/60 focus:border-[#4FAEB2] focus:outline-none focus:ring-2 focus:ring-[#4FAEB2]/20"
-            />
+              defaultValue={selectValue}
+              className="w-[260px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm transition-colors hover:border-[#4FAEB2]/60 focus:border-[#4FAEB2] focus:outline-none focus:ring-2 focus:ring-[#4FAEB2]/20"
+            >
+              {sorteos.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.nombre}
+                  {s.estado === "activo" ? " (activo)" : ""}
+                </option>
+              ))}
+              <option value="all">Todos los sorteos</option>
+            </select>
           </label>
           <SorteoCuponesEstadoPagoFilter />
           <button
@@ -232,72 +230,13 @@ export default async function SorteoCuponesPage({
         ) : null}
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-[#4FAEB2]/45 bg-white shadow-sm">
-        {rows.length === 0 && !queryError ? (
-          <div className="py-16 text-center text-gray-400 text-sm">No hay órdenes con cupones</div>
-        ) : rows.length === 0 ? null : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1140px]">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50/80">
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Nº orden</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Sorteo</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Cliente</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Cédula</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Teléfono</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Cantidad</th>
-                  <th className="px-5 py-3 text-right text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Monto</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Cupones</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Impresión</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Pago</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Fecha</th>
-                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Chat</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {rows.map((r) => (
-                  <tr key={r.entrada_id} className="hover:bg-slate-50/80">
-                    <td className="px-5 py-3 text-sm font-mono font-semibold text-slate-800">{r.numero_orden}</td>
-                    <td className="px-5 py-3 text-sm text-slate-800">{r.sorteo_nombre}</td>
-                    <td className="px-5 py-3 text-sm text-slate-800">{r.nombre_participante}</td>
-                    <td className="px-5 py-3 text-sm font-mono text-slate-600">{r.documento ?? "—"}</td>
-                    <td className="px-5 py-3 text-sm font-mono text-slate-700">{r.whatsapp_numero}</td>
-                    <td className="px-5 py-3 text-sm text-slate-800">{r.cantidad_boletos}</td>
-                    <td className="px-5 py-3 text-sm text-right tabular-nums text-slate-800">
-                      {formatGs(r.monto_total)}
-                      {r.promo_nombre ? (
-                        <div className="text-[11px] font-normal text-slate-500 mt-0.5">{r.promo_nombre}</div>
-                      ) : null}
-                    </td>
-                    <td className="px-5 py-3 text-sm font-mono text-slate-800">{r.numeros_cupon.join(", ")}</td>
-                    <td className="px-5 py-3 text-sm">
-                      <SorteoCuponesImpresionCell
-                        sorteoId={r.sorteo_id}
-                        entradaId={r.entrada_id}
-                        cuponesImpresosAt={r.cupones_impresos_at}
-                      />
-                    </td>
-                    <SorteoCuponesPagoCell entradaId={r.entrada_id} estadoPago={r.estado_pago} />
-                    <td className="px-5 py-3 text-sm text-slate-600 whitespace-nowrap">{formatFecha(r.created_at)}</td>
-                    <td className="px-5 py-3 text-sm">
-                      {r.chat_conversation_id ? (
-                        <Link
-                          href={`/dashboard/conversaciones?conversationId=${encodeURIComponent(r.chat_conversation_id)}`}
-                          className="text-[#4FAEB2] hover:underline"
-                        >
-                          Abrir
-                        </Link>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <SorteoCuponesBatchPrintClient
+        rows={rows}
+        selectedSorteoId={selectedSorteoId}
+        estadoParam={estadoPago}
+        qParam={q}
+        totalCount={total_count}
+      />
     </div>
   );
 }

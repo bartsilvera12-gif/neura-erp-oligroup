@@ -310,6 +310,10 @@ export default function PhysicalCouponsPrintClient({
   fechaHasta,
   entradaId,
   entradaContext,
+  batchMode = false,
+  batchEntradaCount = 0,
+  cuponDesde = null,
+  cuponHasta = null,
 }: {
   sorteoId: string;
   sorteoNombre: string;
@@ -321,6 +325,10 @@ export default function PhysicalCouponsPrintClient({
   fechaHasta: string;
   entradaId: string | null;
   entradaContext: EntradaImpresionContext | null;
+  batchMode?: boolean;
+  batchEntradaCount?: number;
+  cuponDesde?: number | null;
+  cuponHasta?: number | null;
 }) {
   const router = useRouter();
 
@@ -333,6 +341,7 @@ export default function PhysicalCouponsPrintClient({
   const [confirmOk, setConfirmOk] = useState(false);
 
   const modoEntrada = Boolean(entradaId && entradaContext);
+  const modoBatch = Boolean(batchMode) && !modoEntrada;
   const yaImpreso = Boolean(entradaContext?.cupones_impresos_at);
   const mostrarConfirmar = modoEntrada && Boolean(entradaId) && !yaImpreso && !confirmOk;
 
@@ -579,7 +588,43 @@ export default function PhysicalCouponsPrintClient({
           </div>
         ) : null}
 
-        {!modoEntrada ? (
+        {modoBatch ? (
+          <div className="no-print rounded-xl border border-[#4FAEB2]/30 bg-[#4FAEB2]/8 px-4 py-3 text-sm text-sky-950">
+            {batchEntradaCount > 0 ? (
+              <p className="font-semibold">
+                Impresión por tandas: cupones de{" "}
+                <span className="tabular-nums">{batchEntradaCount}</span>{" "}
+                {batchEntradaCount === 1 ? "orden seleccionada" : "órdenes seleccionadas"}.
+              </p>
+            ) : null}
+            {cuponDesde != null || cuponHasta != null ? (
+              <p className="font-semibold">
+                Rango de cupones{" "}
+                {cuponDesde != null ? (
+                  <span className="tabular-nums">{cuponDesde}</span>
+                ) : (
+                  "inicio"
+                )}{" "}
+                –{" "}
+                {cuponHasta != null ? (
+                  <span className="tabular-nums">{cuponHasta}</span>
+                ) : (
+                  "fin"
+                )}
+                .
+              </p>
+            ) : null}
+            <p className="mt-1 text-xs text-sky-900">
+              Solo se muestran los cupones de la selección. Esta vista no modifica datos ni marca como impreso.
+            </p>
+            <Link
+              href={`/sorteos/${encodeURIComponent(sorteoId)}/imprimir-cupones`}
+              className="mt-2 inline-block text-sm font-medium text-[#4FAEB2] hover:underline"
+            >
+              Ver todos los cupones del sorteo (sin filtrar por selección)
+            </Link>
+          </div>
+        ) : !modoEntrada ? (
           <form
             method="get"
             className="no-print flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4"

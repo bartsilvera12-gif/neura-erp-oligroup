@@ -22,12 +22,33 @@ export type PhysicalCouponPrintParams = {
   sorteoId: string;
   /** Si está definido, solo cupones de esa entrada; no se filtra por estado_pago (solo lectura de esa orden). */
   entradaId?: string | null;
-  /** Si es null/undefined, se usa `confirmado` (ignorado cuando hay entradaId). */
+  /**
+   * Impresión por tandas: varias órdenes seleccionadas. Cuando viene (y no hay `entradaId`),
+   * se imprimen los cupones de esas entradas sin filtrar por estado_pago (lectura de lo seleccionado).
+   */
+  entradaIds?: string[] | null;
+  /** Si es null/undefined, se usa `confirmado` (ignorado cuando hay entradaId/entradaIds). */
   estadoPago?: SorteoEntradaEstadoPago | null;
   q?: string | null;
   /** ISO date YYYY-MM-DD inclusive (filtro sobre fecha de referencia). */
   fechaDesde?: string | null;
   fechaHasta?: string | null;
+  /** Rango numérico por número de cupón (solo cupones con numero_cupon numérico). Inclusive. */
+  cuponDesde?: number | null;
+  cuponHasta?: number | null;
+};
+
+/** Filtro interno normalizado que comparten las dos rutas de lectura (pg-directo / PostgREST). */
+type CouponFetchFilter = {
+  sorteoId: string;
+  estadoPago: SorteoEntradaEstadoPago;
+  q: string | null;
+  fechaDesde: string | null;
+  fechaHasta: string | null;
+  entradaId: string | null;
+  entradaIds: string[] | null;
+  cuponDesde: number | null;
+  cuponHasta: number | null;
 };
 
 export type PhysicalCouponPrintRow = {
@@ -123,6 +144,21 @@ function passesDateRange(ref: Date, fechaDesde: string | null | undefined, fecha
   return true;
 }
 
+/** Rango numérico por número de cupón (solo cupones con numero_cupon numérico). Inclusive. */
+function passesCuponRange(
+  numeroCupon: string,
+  cuponDesde: number | null,
+  cuponHasta: number | null
+): boolean {
+  if (cuponDesde == null && cuponHasta == null) return true;
+  const numStr = String(numeroCupon ?? "").trim();
+  if (!/^[0-9]+$/.test(numStr)) return false;
+  const n = Number(numStr);
+  if (cuponDesde != null && n < cuponDesde) return false;
+  if (cuponHasta != null && n > cuponHasta) return false;
+  return true;
+}
+
 function mapRow(args: {
   cupon_id: string;
   numero_cupon: string;
@@ -165,13 +201,9 @@ export type PhysicalCouponsPrintResult = {
 async function fetchPhysicalCouponsPgDirect(
   empresaId: string,
   dataSchema: string,
-  sorteoId: string,
-  estadoPago: SorteoEntradaEstadoPago,
-  q: string | null,
-  fechaDesde: string | null,
-  fechaHasta: string | null,
-  entradaId: string | null
+  f: CouponFetchFilter
 ): Promise<PhysicalCouponsPrintResult> {
+  const { sorteoId, estadoPago, q, fechaDesde, fechaHasta, entradaId, entradaIds, cuponDesde, cuponHasta } = f;
   const pool = getChatPostgresPool();
   if (!pool) {
     return {
@@ -201,9 +233,26 @@ async function fetchPhysicalCouponsPgDirect(
     conds.push(`c.entrada_id = $${i}::uuid`);
     params.push(entradaId);
     i++;
+  } else if (entradaIds && entradaIds.length > 0) {
+    // Tanda: cupones de las órdenes seleccionadas, sin filtrar por estado_pago.
+    conds.push(`c.entrada_id = ANY($${i}::uuid[])`);
+    params.push(entradaIds);
+    i++;
   } else {
     conds.push(`se.estado_pago = $${i}::text`);
     params.push(estadoPago);
+    i++;
+  }
+
+  // Rango por número de cupón (solo cupones con numero_cupon numérico).
+  if (cuponDesde != null) {
+    conds.push(`(c.numero_cupon ~ '^[0-9]+$' AND c.numero_cupon::bigint >= $${i}::bigint)`);
+    params.push(cuponDesde);
+    i++;
+  }
+  if (cuponHasta != null) {
+    conds.push(`(c.numero_cupon ~ '^[0-9]+$' AND c.numero_cupon::bigint <= $${i}::bigint)`);
+    params.push(cuponHasta);
     i++;
   }
 
@@ -293,14 +342,10 @@ async function fetchPhysicalCouponsPgDirect(
 async function fetchPhysicalCouponsPostgrest(
   empresaId: string,
   dataSchema: string,
-  sorteoId: string,
-  estadoPago: SorteoEntradaEstadoPago,
-  q: string | null,
-  fechaDesde: string | null,
-  fechaHasta: string | null,
-  modo: string,
-  entradaId: string | null
+  f: CouponFetchFilter,
+  modo: string
 ): Promise<PhysicalCouponsPrintResult> {
+  const { sorteoId, estadoPago, q, fechaDesde, fechaHasta, entradaId, entradaIds, cuponDesde, cuponHasta } = f;
   const sb = await getChatServiceClientForEmpresa(empresaId);
 
   let qb = sb
@@ -328,6 +373,8 @@ async function fetchPhysicalCouponsPostgrest(
 
   if (entradaId) {
     qb = qb.eq("entrada_id", entradaId);
+  } else if (entradaIds && entradaIds.length > 0) {
+    qb = qb.in("entrada_id", entradaIds);
   } else {
     qb = qb.eq("sorteo_entradas.estado_pago", estadoPago);
   }
@@ -364,6 +411,9 @@ async function fetchPhysicalCouponsPostgrest(
     if (!se || !so) continue;
     if (!entradaMatchesQuery(se, q)) continue;
 
+    // Rango por número de cupón (numérico): se filtra en cliente para PostgREST.
+    if (!passesCuponRange(String(row.numero_cupon ?? ""), cuponDesde, cuponHasta)) continue;
+
     const fechaPago = se.fecha_pago != null ? String(se.fecha_pago) : null;
     const entradaCreated = String(se.created_at ?? "");
     const ref = fechaReferenciaEntrada(fechaPago, entradaCreated);
@@ -393,12 +443,7 @@ async function fetchPhysicalCouponsPostgrest(
 async function runFetch(
   empresaId: string,
   dataSchema: string,
-  sorteoId: string,
-  estadoPago: SorteoEntradaEstadoPago,
-  q: string | null,
-  fechaDesde: string | null,
-  fechaHasta: string | null,
-  entradaId: string | null
+  f: CouponFetchFilter
 ): Promise<PhysicalCouponsPrintResult> {
   const modo = resolveModoEjecucion(dataSchema);
 
@@ -409,44 +454,22 @@ async function runFetch(
       console.error("[sorteos][physical-print]", "tenant_sin_pool", { empresa_id: empresaId, schema: dataSchema });
       return { data: [], error: err };
     }
-    return fetchPhysicalCouponsPgDirect(
-      empresaId,
-      dataSchema,
-      sorteoId,
-      estadoPago,
-      q,
-      fechaDesde,
-      fechaHasta,
-      entradaId
-    );
+    return fetchPhysicalCouponsPgDirect(empresaId, dataSchema, f);
   }
 
-  /** Una entrada concreta o búsqueda con texto: SQL completo si hay pool. */
-  if ((entradaId || q?.trim()) && getChatPostgresPool()) {
-    return fetchPhysicalCouponsPgDirect(
-      empresaId,
-      dataSchema,
-      sorteoId,
-      estadoPago,
-      q,
-      fechaDesde,
-      fechaHasta,
-      entradaId
-    );
+  /** Una entrada / tanda / rango / búsqueda con texto: SQL completo si hay pool. */
+  const prefersPgDirect =
+    Boolean(f.entradaId) ||
+    Boolean(f.entradaIds && f.entradaIds.length > 0) ||
+    f.cuponDesde != null ||
+    f.cuponHasta != null ||
+    Boolean(f.q?.trim());
+  if (prefersPgDirect && getChatPostgresPool()) {
+    return fetchPhysicalCouponsPgDirect(empresaId, dataSchema, f);
   }
 
   try {
-    return await fetchPhysicalCouponsPostgrest(
-      empresaId,
-      dataSchema,
-      sorteoId,
-      estadoPago,
-      q,
-      fechaDesde,
-      fechaHasta,
-      modo,
-      entradaId
-    );
+    return await fetchPhysicalCouponsPostgrest(empresaId, dataSchema, f, modo);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const exhausted = isPgPoolExhaustionMessage(msg);
@@ -605,6 +628,28 @@ export async function fetchPhysicalCouponsForPrintServer(
   const fechaHasta = params.fechaHasta?.trim() || null;
   const entradaId = params.entradaId?.trim() || null;
 
+  // Tanda: normaliza y deduplica IDs de orden (ignorado si hay un entradaId singular).
+  const entradaIds: string[] | null = (() => {
+    if (entradaId) return null;
+    const raw = Array.isArray(params.entradaIds) ? params.entradaIds : [];
+    const clean = [...new Set(raw.map((s) => String(s).trim()).filter(Boolean))];
+    return clean.length > 0 ? clean : null;
+  })();
+
+  const toInt = (v: number | null | undefined): number | null => {
+    if (v == null || !Number.isFinite(v)) return null;
+    const n = Math.trunc(v);
+    return n >= 0 ? n : null;
+  };
+  let cuponDesde = toInt(params.cuponDesde);
+  let cuponHasta = toInt(params.cuponHasta);
+  // Si vienen invertidos, los ordenamos para que el rango sea válido.
+  if (cuponDesde != null && cuponHasta != null && cuponDesde > cuponHasta) {
+    const tmp = cuponDesde;
+    cuponDesde = cuponHasta;
+    cuponHasta = tmp;
+  }
+
   const dataSchema = await fetchDataSchemaForEmpresaId(empresaId);
 
   let entrada_context: EntradaImpresionContext | null = null;
@@ -624,15 +669,16 @@ export async function fetchPhysicalCouponsForPrintServer(
     }
   }
 
-  const out = await runFetch(
-    empresaId,
-    dataSchema,
+  const out = await runFetch(empresaId, dataSchema, {
     sorteoId,
     estadoPago,
     q,
     fechaDesde,
     fechaHasta,
-    entradaId
-  );
+    entradaId,
+    entradaIds,
+    cuponDesde,
+    cuponHasta,
+  });
   return { ...out, entrada_context };
 }
