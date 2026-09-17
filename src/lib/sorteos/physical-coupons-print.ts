@@ -33,9 +33,9 @@ export type PhysicalCouponPrintParams = {
   /** ISO date YYYY-MM-DD inclusive (filtro sobre fecha de referencia). */
   fechaDesde?: string | null;
   fechaHasta?: string | null;
-  /** Rango numérico por número de cupón (solo cupones con numero_cupon numérico). Inclusive. */
-  cuponDesde?: number | null;
-  cuponHasta?: number | null;
+  /** Rango numérico por número de orden (sorteo_entradas.numero_orden). Inclusive. */
+  ordenDesde?: number | null;
+  ordenHasta?: number | null;
 };
 
 /** Filtro interno normalizado que comparten las dos rutas de lectura (pg-directo / PostgREST). */
@@ -47,8 +47,8 @@ type CouponFetchFilter = {
   fechaHasta: string | null;
   entradaId: string | null;
   entradaIds: string[] | null;
-  cuponDesde: number | null;
-  cuponHasta: number | null;
+  ordenDesde: number | null;
+  ordenHasta: number | null;
 };
 
 export type PhysicalCouponPrintRow = {
@@ -144,18 +144,16 @@ function passesDateRange(ref: Date, fechaDesde: string | null | undefined, fecha
   return true;
 }
 
-/** Rango numérico por número de cupón (solo cupones con numero_cupon numérico). Inclusive. */
-function passesCuponRange(
-  numeroCupon: string,
-  cuponDesde: number | null,
-  cuponHasta: number | null
+/** Rango numérico por número de orden (sorteo_entradas.numero_orden). Inclusive. */
+function passesOrdenRange(
+  numeroOrden: number,
+  ordenDesde: number | null,
+  ordenHasta: number | null
 ): boolean {
-  if (cuponDesde == null && cuponHasta == null) return true;
-  const numStr = String(numeroCupon ?? "").trim();
-  if (!/^[0-9]+$/.test(numStr)) return false;
-  const n = Number(numStr);
-  if (cuponDesde != null && n < cuponDesde) return false;
-  if (cuponHasta != null && n > cuponHasta) return false;
+  if (ordenDesde == null && ordenHasta == null) return true;
+  if (!Number.isFinite(numeroOrden)) return false;
+  if (ordenDesde != null && numeroOrden < ordenDesde) return false;
+  if (ordenHasta != null && numeroOrden > ordenHasta) return false;
   return true;
 }
 
@@ -203,7 +201,7 @@ async function fetchPhysicalCouponsPgDirect(
   dataSchema: string,
   f: CouponFetchFilter
 ): Promise<PhysicalCouponsPrintResult> {
-  const { sorteoId, estadoPago, q, fechaDesde, fechaHasta, entradaId, entradaIds, cuponDesde, cuponHasta } = f;
+  const { sorteoId, estadoPago, q, fechaDesde, fechaHasta, entradaId, entradaIds, ordenDesde, ordenHasta } = f;
   const pool = getChatPostgresPool();
   if (!pool) {
     return {
@@ -244,15 +242,15 @@ async function fetchPhysicalCouponsPgDirect(
     i++;
   }
 
-  // Rango por número de cupón (solo cupones con numero_cupon numérico).
-  if (cuponDesde != null) {
-    conds.push(`(c.numero_cupon ~ '^[0-9]+$' AND c.numero_cupon::bigint >= $${i}::bigint)`);
-    params.push(cuponDesde);
+  // Rango por número de orden (sorteo_entradas.numero_orden).
+  if (ordenDesde != null) {
+    conds.push(`se.numero_orden >= $${i}::bigint`);
+    params.push(ordenDesde);
     i++;
   }
-  if (cuponHasta != null) {
-    conds.push(`(c.numero_cupon ~ '^[0-9]+$' AND c.numero_cupon::bigint <= $${i}::bigint)`);
-    params.push(cuponHasta);
+  if (ordenHasta != null) {
+    conds.push(`se.numero_orden <= $${i}::bigint`);
+    params.push(ordenHasta);
     i++;
   }
 
@@ -345,7 +343,7 @@ async function fetchPhysicalCouponsPostgrest(
   f: CouponFetchFilter,
   modo: string
 ): Promise<PhysicalCouponsPrintResult> {
-  const { sorteoId, estadoPago, q, fechaDesde, fechaHasta, entradaId, entradaIds, cuponDesde, cuponHasta } = f;
+  const { sorteoId, estadoPago, q, fechaDesde, fechaHasta, entradaId, entradaIds, ordenDesde, ordenHasta } = f;
   const sb = await getChatServiceClientForEmpresa(empresaId);
 
   let qb = sb
@@ -411,16 +409,16 @@ async function fetchPhysicalCouponsPostgrest(
     if (!se || !so) continue;
     if (!entradaMatchesQuery(se, q)) continue;
 
-    // Rango por número de cupón (numérico): se filtra en cliente para PostgREST.
-    if (!passesCuponRange(String(row.numero_cupon ?? ""), cuponDesde, cuponHasta)) continue;
+    const numeroOrden =
+      typeof se.numero_orden === "number" ? se.numero_orden : Number(se.numero_orden) || 0;
+
+    // Rango por número de orden: se filtra en cliente para PostgREST.
+    if (!passesOrdenRange(numeroOrden, ordenDesde, ordenHasta)) continue;
 
     const fechaPago = se.fecha_pago != null ? String(se.fecha_pago) : null;
     const entradaCreated = String(se.created_at ?? "");
     const ref = fechaReferenciaEntrada(fechaPago, entradaCreated);
     if (!passesDateRange(ref, fechaDesde, fechaHasta)) continue;
-
-    const numeroOrden =
-      typeof se.numero_orden === "number" ? se.numero_orden : Number(se.numero_orden) || 0;
 
     out.push(
       mapRow({
@@ -461,8 +459,8 @@ async function runFetch(
   const prefersPgDirect =
     Boolean(f.entradaId) ||
     Boolean(f.entradaIds && f.entradaIds.length > 0) ||
-    f.cuponDesde != null ||
-    f.cuponHasta != null ||
+    f.ordenDesde != null ||
+    f.ordenHasta != null ||
     Boolean(f.q?.trim());
   if (prefersPgDirect && getChatPostgresPool()) {
     return fetchPhysicalCouponsPgDirect(empresaId, dataSchema, f);
@@ -641,13 +639,13 @@ export async function fetchPhysicalCouponsForPrintServer(
     const n = Math.trunc(v);
     return n >= 0 ? n : null;
   };
-  let cuponDesde = toInt(params.cuponDesde);
-  let cuponHasta = toInt(params.cuponHasta);
+  let ordenDesde = toInt(params.ordenDesde);
+  let ordenHasta = toInt(params.ordenHasta);
   // Si vienen invertidos, los ordenamos para que el rango sea válido.
-  if (cuponDesde != null && cuponHasta != null && cuponDesde > cuponHasta) {
-    const tmp = cuponDesde;
-    cuponDesde = cuponHasta;
-    cuponHasta = tmp;
+  if (ordenDesde != null && ordenHasta != null && ordenDesde > ordenHasta) {
+    const tmp = ordenDesde;
+    ordenDesde = ordenHasta;
+    ordenHasta = tmp;
   }
 
   const dataSchema = await fetchDataSchemaForEmpresaId(empresaId);
@@ -677,8 +675,8 @@ export async function fetchPhysicalCouponsForPrintServer(
     fechaHasta,
     entradaId,
     entradaIds,
-    cuponDesde,
-    cuponHasta,
+    ordenDesde,
+    ordenHasta,
   });
   return { ...out, entrada_context };
 }

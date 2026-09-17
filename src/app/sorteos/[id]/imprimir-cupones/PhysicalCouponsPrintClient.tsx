@@ -312,8 +312,8 @@ export default function PhysicalCouponsPrintClient({
   entradaContext,
   batchMode = false,
   batchEntradaCount = 0,
-  cuponDesde = null,
-  cuponHasta = null,
+  ordenDesde = null,
+  ordenHasta = null,
 }: {
   sorteoId: string;
   sorteoNombre: string;
@@ -327,8 +327,8 @@ export default function PhysicalCouponsPrintClient({
   entradaContext: EntradaImpresionContext | null;
   batchMode?: boolean;
   batchEntradaCount?: number;
-  cuponDesde?: number | null;
-  cuponHasta?: number | null;
+  ordenDesde?: number | null;
+  ordenHasta?: number | null;
 }) {
   const router = useRouter();
 
@@ -597,17 +597,17 @@ export default function PhysicalCouponsPrintClient({
                 {batchEntradaCount === 1 ? "orden seleccionada" : "órdenes seleccionadas"}.
               </p>
             ) : null}
-            {cuponDesde != null || cuponHasta != null ? (
+            {ordenDesde != null || ordenHasta != null ? (
               <p className="font-semibold">
-                Rango de cupones{" "}
-                {cuponDesde != null ? (
-                  <span className="tabular-nums">{cuponDesde}</span>
+                Rango de órdenes{" "}
+                {ordenDesde != null ? (
+                  <span className="tabular-nums">{ordenDesde}</span>
                 ) : (
                   "inicio"
                 )}{" "}
                 –{" "}
-                {cuponHasta != null ? (
-                  <span className="tabular-nums">{cuponHasta}</span>
+                {ordenHasta != null ? (
+                  <span className="tabular-nums">{ordenHasta}</span>
                 ) : (
                   "fin"
                 )}

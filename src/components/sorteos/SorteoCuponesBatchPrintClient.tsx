@@ -47,8 +47,8 @@ export default function SorteoCuponesBatchPrintClient({
   totalCount: number;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [cuponDesde, setCuponDesde] = useState("");
-  const [cuponHasta, setCuponHasta] = useState("");
+  const [ordenDesde, setOrdenDesde] = useState("");
+  const [ordenHasta, setOrdenHasta] = useState("");
 
   const visibleIds = useMemo(() => rows.map((r) => r.entrada_id), [rows]);
   const allVisibleSelected =
@@ -111,16 +111,16 @@ export default function SorteoCuponesBatchPrintClient({
       window.alert("Elegí un sorteo específico en el filtro para imprimir por rango.");
       return;
     }
-    const d = cuponDesde.trim();
-    const h = cuponHasta.trim();
+    const d = ordenDesde.trim();
+    const h = ordenHasta.trim();
     if (!/^[0-9]+$/.test(d) || !/^[0-9]+$/.test(h)) {
-      window.alert("Ingresá un rango numérico válido (desde y hasta).");
+      window.alert("Ingresá un rango numérico válido (N° de orden desde y hasta).");
       return;
     }
     openPrintWindow(
       printUrl(selectedSorteoId, {
-        cupon_desde: d,
-        cupon_hasta: h,
+        orden_desde: d,
+        orden_hasta: h,
         estado: estadoParam ?? "",
       })
     );
@@ -165,25 +165,25 @@ export default function SorteoCuponesBatchPrintClient({
           <div className="flex items-end gap-2 border-l border-slate-200 pl-3">
             <label className="flex flex-col gap-1">
               <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                Cupón desde
+                Orden desde
               </span>
               <input
                 inputMode="numeric"
-                value={cuponDesde}
-                onChange={(e) => setCuponDesde(e.target.value.replace(/[^0-9]/g, ""))}
-                placeholder="0001"
+                value={ordenDesde}
+                onChange={(e) => setOrdenDesde(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="1"
                 className="w-[110px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-[#4FAEB2] focus:outline-none focus:ring-2 focus:ring-[#4FAEB2]/20"
               />
             </label>
             <label className="flex flex-col gap-1">
               <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                Cupón hasta
+                Orden hasta
               </span>
               <input
                 inputMode="numeric"
-                value={cuponHasta}
-                onChange={(e) => setCuponHasta(e.target.value.replace(/[^0-9]/g, ""))}
-                placeholder="0100"
+                value={ordenHasta}
+                onChange={(e) => setOrdenHasta(e.target.value.replace(/[^0-9]/g, ""))}
+                placeholder="100"
                 className="w-[110px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-[#4FAEB2] focus:outline-none focus:ring-2 focus:ring-[#4FAEB2]/20"
               />
             </label>

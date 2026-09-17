@@ -75,8 +75,8 @@ export default async function ImprimirCuponesSorteoPage({
   const entradaIdRaw = pickStr(sp, "entrada_id").trim();
   // Tanda: solo se consideran si NO hay un entrada_id singular.
   const entradaIds = entradaIdRaw ? [] : pickIdList(sp, "entrada_ids");
-  const cuponDesde = pickInt(sp, "cupon_desde");
-  const cuponHasta = pickInt(sp, "cupon_hasta");
+  const ordenDesde = pickInt(sp, "orden_desde");
+  const ordenHasta = pickInt(sp, "orden_hasta");
 
   const result = await fetchPhysicalCouponsForPrintServer({
     sorteoId,
@@ -86,12 +86,12 @@ export default async function ImprimirCuponesSorteoPage({
     q: q || null,
     fechaDesde: fechaDesde || null,
     fechaHasta: fechaHasta || null,
-    cuponDesde,
-    cuponHasta,
+    ordenDesde,
+    ordenHasta,
   });
 
   const entradaContext: EntradaImpresionContext | null = result.entrada_context ?? null;
-  const batchMode = !entradaIdRaw && (entradaIds.length > 0 || cuponDesde != null || cuponHasta != null);
+  const batchMode = !entradaIdRaw && (entradaIds.length > 0 || ordenDesde != null || ordenHasta != null);
 
   return (
     <PhysicalCouponsPrintClient
@@ -107,8 +107,8 @@ export default async function ImprimirCuponesSorteoPage({
       entradaContext={entradaContext}
       batchMode={batchMode}
       batchEntradaCount={entradaIds.length}
-      cuponDesde={cuponDesde}
-      cuponHasta={cuponHasta}
+      ordenDesde={ordenDesde}
+      ordenHasta={ordenHasta}
     />
   );
 }
