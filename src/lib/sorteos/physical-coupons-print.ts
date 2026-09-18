@@ -236,6 +236,9 @@ async function fetchPhysicalCouponsPgDirect(
     conds.push(`c.entrada_id = ANY($${i}::uuid[])`);
     params.push(entradaIds);
     i++;
+  } else if (ordenDesde != null || ordenHasta != null) {
+    // Rango por N° de orden: trae todas las órdenes del rango sin filtrar por estado_pago
+    // (los cupones se generan antes de confirmar el pago). El rango se aplica más abajo.
   } else {
     conds.push(`se.estado_pago = $${i}::text`);
     params.push(estadoPago);
@@ -373,6 +376,8 @@ async function fetchPhysicalCouponsPostgrest(
     qb = qb.eq("entrada_id", entradaId);
   } else if (entradaIds && entradaIds.length > 0) {
     qb = qb.in("entrada_id", entradaIds);
+  } else if (ordenDesde != null || ordenHasta != null) {
+    // Rango por N° de orden: sin filtro de estado_pago (se aplica el rango en cliente).
   } else {
     qb = qb.eq("sorteo_entradas.estado_pago", estadoPago);
   }
