@@ -100,6 +100,11 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
 
     const ts = new Date().toISOString();
 
+    // Construimos todas las filas en memoria y las insertamos en lotes (bulk).
+    // Insertar de a una (await por fila) hacía timeout con archivos grandes:
+    // ~5.000 round-trips PostgREST no entran en el límite de la función.
+    const insertRows: Record<string, unknown>[] = [];
+
     for (const row of parsed.rows) {
       rowNum += 1;
       const rawPhone = row[phoneCol] ?? "";
@@ -133,7 +138,7 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
         campaign_id: campaignId,
         row_number: rowNum,
         phone_raw: String(rawPhone).trim() || null,
-        phone_e164: phoneE164 || "+0",
+        phone_e164: status === "invalid" ? `invalid_${rowNum}_${campaignId.slice(0, 8)}` : phoneE164 || "+0",
         row_payload_json: row,
         mapped_variables_json: {},
         status,
@@ -142,11 +147,14 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
         updated_at: ts,
       };
 
-      if (status === "invalid") {
-        insertRow.phone_e164 = `invalid_${rowNum}_${campaignId.slice(0, 8)}`;
-      }
+      insertRows.push(insertRow);
+    }
 
-      const { error: insErr } = await sb.from("chat_campaign_recipients").insert(insertRow);
+    // Inserción por lotes para no exceder el timeout con archivos grandes.
+    const INSERT_CHUNK = 500;
+    for (let i = 0; i < insertRows.length; i += INSERT_CHUNK) {
+      const chunk = insertRows.slice(i, i + INSERT_CHUNK);
+      const { error: insErr } = await sb.from("chat_campaign_recipients").insert(chunk);
       if (insErr) {
         return NextResponse.json(errorResponse(insErr.message), { status: 400 });
       }
