@@ -40,6 +40,8 @@ export default function RevendedoresModulePage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [copiedBuy, setCopiedBuy] = useState<string | null>(null);
+  const [qrRev, setQrRev] = useState<RevRow | null>(null);
 
   // Alta de revendedor (antes vivía en el editor del sorteo).
   const [showForm, setShowForm] = useState(false);
@@ -101,6 +103,37 @@ export default function RevendedoresModulePage() {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
     return `${origin}/r/reporte/${token}`;
   }, []);
+
+  // Enlace de compra/referido que el revendedor comparte con los compradores:
+  // /r/{codigo}?sorteo={uuid} → redirige a WhatsApp con mensaje precargado.
+  const buyUrl = useCallback(
+    (codigo: string | null) => {
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const c = encodeURIComponent((codigo ?? "").trim());
+      return `${origin}/r/${c}?sorteo=${encodeURIComponent(sorteoId)}`;
+    },
+    [sorteoId]
+  );
+
+  const copyBuyLink = useCallback(
+    async (rev: RevRow) => {
+      if (!rev.codigo_referido) return;
+      const url = buyUrl(rev.codigo_referido);
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopiedBuy(rev.id);
+        window.setTimeout(() => setCopiedBuy((c) => (c === rev.id ? null : c)), 2500);
+      } catch {
+        window.prompt("Copiá el enlace de compra:", url);
+      }
+    },
+    [buyUrl]
+  );
+
+  const qrImgUrl = useCallback(
+    (link: string) => `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(link)}`,
+    []
+  );
 
   const copyLink = useCallback(
     async (rev: RevRow) => {
@@ -371,12 +404,33 @@ export default function RevendedoresModulePage() {
                         >
                           {downloading === `${rev.id}:pdf` ? "…" : "PDF"}
                         </button>
+                        {rev.codigo_referido ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void copyBuyLink(rev)}
+                              title="Copiar el enlace de compra que el revendedor comparte con los compradores"
+                              className="rounded-lg border border-[#4FAEB2]/40 bg-[#4FAEB2]/10 px-2.5 py-1.5 text-[11px] font-semibold text-[#3F8E91] transition-colors hover:bg-[#4FAEB2]/20"
+                            >
+                              {copiedBuy === rev.id ? "¡Copiado!" : "Copiar compra"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setQrRev(rev)}
+                              title="Ver QR del enlace de compra"
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition-colors hover:border-[#4FAEB2]/60 hover:text-[#3F8E91]"
+                            >
+                              QR
+                            </button>
+                          </>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() => void copyLink(rev)}
+                          title="Copiar el link de reporte público (solo métricas de ventas)"
                           className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition-colors hover:border-[#4FAEB2]/60 hover:text-[#3F8E91]"
                         >
-                          {copied === rev.id ? "¡Copiado!" : "Copiar link"}
+                          {copied === rev.id ? "¡Copiado!" : "Copiar reporte"}
                         </button>
                         <a
                           href={reportUrl(rev.report_slug)}
@@ -397,8 +451,60 @@ export default function RevendedoresModulePage() {
       </div>
 
       <p className="mt-4 text-[12px] text-slate-400">
-        El link de reporte es público y muestra solo las ventas de ese vendedor (sin datos de los compradores). Compartilo por WhatsApp o donde prefieras.
+        <strong className="font-medium text-slate-500">Enlace de compra</strong>: es el que el revendedor comparte con los compradores (redirige a WhatsApp con su código). El{" "}
+        <strong className="font-medium text-slate-500">link de reporte</strong> es público y muestra solo las ventas de ese vendedor (sin datos de los compradores).
       </p>
+
+      {/* Modal QR del enlace de compra */}
+      {qrRev ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          onClick={() => setQrRev(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#4FAEB2]">Enlace de compra</div>
+                <h3 className="text-base font-bold text-slate-900">{qrRev.nombre || "(sin nombre)"}</h3>
+                <div className="text-xs text-slate-500 font-mono">{qrRev.codigo_referido}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQrRev(null)}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-500 hover:bg-slate-50"
+                aria-label="Cerrar"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex justify-center">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={qrImgUrl(buyUrl(qrRev.codigo_referido))}
+                alt={`QR ${qrRev.codigo_referido}`}
+                width={240}
+                height={240}
+                className="rounded-lg border border-slate-200 bg-white"
+              />
+            </div>
+            <div className="mt-4 break-all rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+              {buyUrl(qrRev.codigo_referido)}
+            </div>
+            <button
+              type="button"
+              onClick={() => void copyBuyLink(qrRev)}
+              className="mt-3 w-full rounded-lg bg-[#4FAEB2] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#3F8E91]"
+            >
+              {copiedBuy === qrRev.id ? "¡Copiado!" : "Copiar enlace de compra"}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
