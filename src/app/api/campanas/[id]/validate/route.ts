@@ -21,6 +21,9 @@ import { extractBodyPlaceholderKeysOrdered } from "@/lib/campaigns/campaign-temp
 
 type RouteCtx = { params: Promise<{ id: string }> };
 
+/** Validar ~12.000 destinatarios tarda más que el default de 15 s de algunos runtimes. */
+export const maxDuration = 120;
+
 export async function POST(request: NextRequest, ctx: RouteCtx) {
   const auth = await requireCampanasApiAccess(request);
   if (!auth.ok) {
@@ -91,6 +94,27 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
         ? "La plantilla tiene variables: definí el mapeo desde cada {{variable}} hacia una columna del Excel."
         : missingMappingSlots.map(formatMissingMappingMessage).join(" ");
 
+    /**
+     * Antes esto hacía un UPDATE por destinatario, secuencial: con ~12.000 filas
+     * son ~12.000 round-trips y la validación no terminaba nunca.
+     *
+     * Ahora agrupamos por patch idéntico y mandamos un UPDATE ... IN (...) por
+     * grupo. Cuando la plantilla no tiene variables todas las filas comparten el
+     * mismo patch, así que es un puñado de queries en vez de miles. Con variables
+     * el beneficio depende de cuánto se repitan los valores.
+     */
+    const updateGroups = new Map<string, { patch: Record<string, unknown>; ids: string[] }>();
+
+    const queueUpdate = (id: string, patch: Record<string, unknown>): void => {
+      const key = JSON.stringify(patch);
+      const g = updateGroups.get(key);
+      if (g) {
+        g.ids.push(id);
+        return;
+      }
+      updateGroups.set(key, { patch, ids: [id] });
+    };
+
     for (const rec of recipients ?? []) {
       const row = rec as {
         id: string;
@@ -101,16 +125,12 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
 
       if (mappingDefinitionIncomplete) {
         mappingErrors += 1;
-        await sb
-          .from("chat_campaign_recipients")
-          .update({
-            status: "pending",
-            mapped_variables_json: {},
-            validation_error: mappingDefinitionMessage || "Mapeo de variables incompleto",
-            updated_at: ts,
-          })
-          .eq("id", row.id)
-          .eq("empresa_id", auth.empresaId);
+        queueUpdate(row.id, {
+          status: "pending",
+          mapped_variables_json: {},
+          validation_error: mappingDefinitionMessage || "Mapeo de variables incompleto",
+          updated_at: ts,
+        });
         continue;
       }
 
@@ -123,29 +143,45 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
         mappingErrors += 1;
         const emptySlots = listSlotsWithEmptyMappedValues(mapped, tplComponents as unknown[]);
         const errMsg = emptySlots.map(formatMissingValueMessage).join(" ");
-        await sb
-          .from("chat_campaign_recipients")
-          .update({
-            status: "pending",
-            mapped_variables_json: mapped,
-            validation_error: errMsg || "Faltan variables de plantilla",
-            updated_at: ts,
-          })
-          .eq("id", row.id)
-          .eq("empresa_id", auth.empresaId);
+        queueUpdate(row.id, {
+          status: "pending",
+          mapped_variables_json: mapped,
+          validation_error: errMsg || "Faltan variables de plantilla",
+          updated_at: ts,
+        });
         continue;
       }
 
-      await sb
-        .from("chat_campaign_recipients")
-        .update({
-          mapped_variables_json: mapped,
-          validation_error: null,
-          status: "pending",
-          updated_at: ts,
-        })
-        .eq("id", row.id)
-        .eq("empresa_id", auth.empresaId);
+      queueUpdate(row.id, {
+        mapped_variables_json: mapped,
+        validation_error: null,
+        status: "pending",
+        updated_at: ts,
+      });
+    }
+
+    const UPDATE_CHUNK = 500;
+    for (const { patch, ids } of updateGroups.values()) {
+      for (let i = 0; i < ids.length; i += UPDATE_CHUNK) {
+        const chunk = ids.slice(i, i + UPDATE_CHUNK);
+        const { error: updErr } = await sb
+          .from("chat_campaign_recipients")
+          .update(patch)
+          .in("id", chunk)
+          .eq("empresa_id", auth.empresaId);
+        if (updErr) {
+          console.error("[campanas][validate] update_chunk_failed", {
+            campaign_id: campaignId,
+            group_size: ids.length,
+            chunk_start: i,
+            error: updErr.message,
+          });
+          return NextResponse.json(
+            errorResponse(`No se pudo validar la lista completa: ${updErr.message}`),
+            { status: 400 }
+          );
+        }
+      }
     }
 
     const headerResolution = resolveHeaderImageUrlForCampaign({

@@ -500,6 +500,7 @@ export default function CampanasDetailClient({
     );
   }
 
+  const hasPlaceholders = placeholderSlots.length > 0;
   const canImport = campaign.status === "draft" || campaign.status === "ready";
   /** Tras validación exitosa el backend pasa a `ready`; envío solo en ese estado. */
   const canLaunch = campaign.status === "ready";
@@ -759,8 +760,13 @@ export default function CampanasDetailClient({
         ) : null}
       </section>
 
-      {placeholderSlots.length > 0 ? (
-        <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ring-1 ring-[#4FAEB2]/15">
+      {/**
+       * La validación es el único paso que pasa la campaña de `draft` a `ready`,
+       * así que la sección se muestra siempre: cuando dependía de que la plantilla
+       * tuviera variables, una plantilla de texto fijo se quedaba sin botón de
+       * validar y "Enviar ahora" nunca se habilitaba.
+       */}
+      <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ring-1 ring-[#4FAEB2]/15">
           <div>
             <div className="flex items-center gap-2">
               <span
@@ -768,21 +774,33 @@ export default function CampanasDetailClient({
                 className="inline-block h-1.5 w-1.5 rounded-full bg-[#4FAEB2] shadow-[0_0_0_3px_rgba(79,174,178,0.18)]"
               />
               <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#4FAEB2]">
-                Mapeo de variables
+                {hasPlaceholders ? "Mapeo de variables" : "Validación de destinatarios"}
               </h2>
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              Cada variable del <strong>body</strong> de la plantilla debe corresponder a una columna del Excel. Si el
-              nombre de la columna coincide exactamente con la variable, se selecciona sola.
+              {hasPlaceholders ? (
+                <>
+                  Cada variable del <strong>body</strong> de la plantilla debe corresponder a una columna del Excel. Si
+                  el nombre de la columna coincide exactamente con la variable, se selecciona sola.
+                </>
+              ) : (
+                <>
+                  Esta plantilla no tiene variables, así que no hay nada que mapear. Igual tenés que validar los
+                  destinatarios: es el paso que habilita <strong>Enviar ahora</strong>.
+                </>
+              )}
             </p>
           </div>
 
           {excelColumns.length === 0 ? (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              Importá un archivo (.xlsx / .csv) para listar las columnas disponibles en los selectores.
+              {hasPlaceholders
+                ? "Importá un archivo (.xlsx / .csv) para listar las columnas disponibles en los selectores."
+                : "Importá un archivo (.xlsx / .csv) con los destinatarios antes de validar."}
             </div>
           ) : null}
 
+          {hasPlaceholders ? (
           <div className="overflow-hidden rounded-xl border border-slate-200">
             <table className="min-w-full divide-y divide-slate-100 text-sm">
               <thead className="bg-slate-50/70 text-left text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
@@ -820,8 +838,10 @@ export default function CampanasDetailClient({
               </tbody>
             </table>
           </div>
+          ) : null}
 
           <div className="flex flex-wrap items-center justify-end gap-2">
+            {hasPlaceholders ? (
             <button
               type="button"
               disabled={busy || !canImport}
@@ -830,6 +850,7 @@ export default function CampanasDetailClient({
             >
               Guardar mapeo
             </button>
+            ) : null}
             <button
               type="button"
               disabled={busy || !canImport}
@@ -840,7 +861,7 @@ export default function CampanasDetailClient({
             </button>
           </div>
 
-          {campaign.status !== "ready" && placeholderSlots.length > 0 ? (
+          {campaign.status !== "ready" ? (
             <p className="text-xs text-slate-500">
               Cuando la validación sea correcta, el estado pasará a <strong>ready</strong> y podrás usar{" "}
               <strong>Enviar ahora</strong>.
@@ -856,13 +877,12 @@ export default function CampanasDetailClient({
                 {previewText}
               </pre>
             </div>
-          ) : placeholderSlots.length > 0 && excelColumns.length > 0 ? (
+          ) : hasPlaceholders && excelColumns.length > 0 ? (
             <p className="text-xs text-slate-500">
               Completá el mapeo y/o revisá que la primera fila tenga datos para ver la vista previa sin placeholders.
             </p>
           ) : null}
-        </section>
-      ) : null}
+      </section>
 
       {quickReplyTemplateButtons.length > 0 ? (
         <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ring-1 ring-[#4FAEB2]/15">
