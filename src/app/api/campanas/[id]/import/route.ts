@@ -5,9 +5,13 @@ import { requireCampanasApiAccess } from "@/lib/campaigns/campaign-auth";
 import {
   parseCampaignSpreadsheet,
   pickPhoneColumn,
+} from "@/lib/campaigns/campaign-import-service";
+import {
   CAMPAIGN_IMPORT_MAX_BYTES,
   CAMPAIGN_IMPORT_MAX_ROWS,
-} from "@/lib/campaigns/campaign-import-service";
+  formatCampaignImportMaxRows,
+  formatCampaignImportMaxSize,
+} from "@/lib/campaigns/campaign-import-limits";
 import { normalizeCampaignPhone } from "@/lib/campaigns/campaign-phone";
 import {
   applyHeaderImageSendConfigUpdate,
@@ -17,6 +21,12 @@ import {
 } from "@/lib/campaigns/campaign-header-image";
 
 type RouteCtx = { params: Promise<{ id: string }> };
+
+/**
+ * Importar 15.000 filas tarda más que el default de 15 s de algunos runtimes.
+ * En el contenedor propio (Coolify) no aplica, pero no cuesta nada dejarlo.
+ */
+export const maxDuration = 120;
 
 export async function POST(request: NextRequest, ctx: RouteCtx) {
   const auth = await requireCampanasApiAccess(request);
@@ -38,7 +48,7 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
     const buf = Buffer.from(await file.arrayBuffer());
     if (buf.length > CAMPAIGN_IMPORT_MAX_BYTES) {
       return NextResponse.json(
-        errorResponse(`Archivo demasiado grande (máx. ${CAMPAIGN_IMPORT_MAX_BYTES} bytes)`),
+        errorResponse(`Archivo demasiado grande (máx. ${formatCampaignImportMaxSize()})`),
         { status: 400 }
       );
     }
@@ -52,7 +62,7 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
 
     if (parsed.rows.length > CAMPAIGN_IMPORT_MAX_ROWS) {
       return NextResponse.json(
-        errorResponse(`Demasiadas filas (máx. ${CAMPAIGN_IMPORT_MAX_ROWS})`),
+        errorResponse(`Demasiadas filas (máx. ${formatCampaignImportMaxRows()})`),
         { status: 400 }
       );
     }
@@ -150,13 +160,34 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
       insertRows.push(insertRow);
     }
 
-    // Inserción por lotes para no exceder el timeout con archivos grandes.
-    const INSERT_CHUNK = 500;
+    /**
+     * Inserción por lotes para no exceder el timeout con archivos grandes.
+     * Con el límite en 15.000 filas son ~15 round-trips en vez de ~30, y si un
+     * lote falla se borra lo ya insertado: una campaña a medias mandaría la
+     * plantilla solo a una parte de la lista, sin forma de saber a quiénes.
+     */
+    const INSERT_CHUNK = 1000;
     for (let i = 0; i < insertRows.length; i += INSERT_CHUNK) {
       const chunk = insertRows.slice(i, i + INSERT_CHUNK);
       const { error: insErr } = await sb.from("chat_campaign_recipients").insert(chunk);
       if (insErr) {
-        return NextResponse.json(errorResponse(insErr.message), { status: 400 });
+        await sb
+          .from("chat_campaign_recipients")
+          .delete()
+          .eq("campaign_id", campaignId)
+          .eq("empresa_id", auth.empresaId);
+        console.error("[campanas][import] insert_chunk_failed", {
+          campaign_id: campaignId,
+          chunk_start: i,
+          total_rows: insertRows.length,
+          error: insErr.message,
+        });
+        return NextResponse.json(
+          errorResponse(
+            `No se pudo importar la lista completa (${insErr.message}). No quedaron destinatarios cargados: volvé a subir el archivo.`
+          ),
+          { status: 400 }
+        );
       }
     }
 

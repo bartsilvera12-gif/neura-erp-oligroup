@@ -4,6 +4,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import {
+  formatCampaignImportMaxRows,
+  formatCampaignImportMaxSize,
+} from "@/lib/campaigns/campaign-import-limits";
+import {
   buildCampaignTemplatePreviewText,
   extractBodyPlaceholderKeysOrdered,
 } from "@/lib/campaigns/campaign-placeholders-shared";
@@ -731,7 +735,10 @@ export default function CampanasDetailClient({
           )}
         </div>
 
-        <p className="text-xs text-slate-500">Formatos .xlsx / .xls / .csv · Máximo 5.000 filas / 5 MB.</p>
+        <p className="text-xs text-slate-500">
+          Formatos .xlsx / .xls / .csv · Máximo {formatCampaignImportMaxRows()} filas /{" "}
+          {formatCampaignImportMaxSize()}.
+        </p>
         {templateHasHeaderImage ? (
           <p className="text-xs text-slate-600">
             <strong>

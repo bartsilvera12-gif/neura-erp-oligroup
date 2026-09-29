@@ -53,6 +53,7 @@
     "db:apply-sorteo-coupon-numbering": "node scripts/apply-migration-file-pg.cjs supabase/migrations/20260504120000_sorteos_coupon_numbering.sql",
     "qa:sorteo-coupon-numbering": "tsx scripts/qa-sorteo-coupon-numbering-unit.ts",
     "qa:campaign-template-vars": "tsx scripts/qa-campaign-template-variables.ts",
+    "qa:campaign-import-limits": "tsx scripts/qa-campaign-import-limits.ts",
     "qa:bot-wake-on-button": "tsx scripts/qa-bot-wake-on-button.ts",
     "qa:chat-flow-node-fks": "node scripts/qa-chat-flow-node-fks-tenants.cjs",
     "db:apply-provision-chat-flow-node-fks": "node scripts/apply-migration-file-pg.cjs supabase/migrations/20260531100000_provision_fix_chat_flow_node_fks_one_schema.sql"
