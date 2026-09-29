@@ -100,6 +100,12 @@ export type ChatInboxFilters = {
   priority?: string | null;
   /** Filtro opcional por `chat_conversations.channel_id` (UUID). */
   channel_id?: string | null;
+  /**
+   * Búsqueda server-side por nombre o teléfono del contacto. Permite encontrar
+   * conversaciones que no están en la página cargada (p. ej. un número al que se
+   * le envió un masivo y todavía no respondió). Solo aplica en el path tenant_pg.
+   */
+  search?: string | null;
 };
 
 export type InboxConversation = {

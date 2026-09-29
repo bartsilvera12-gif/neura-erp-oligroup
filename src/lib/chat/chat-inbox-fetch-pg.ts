@@ -397,6 +397,32 @@ export async function fetchChatConversationsFromTenantPg(
     pi++;
   }
 
+  // Búsqueda server-side por nombre o teléfono del contacto. Encuentra chats aunque
+  // no estén en la página cargada (p. ej. un número de un masivo sin respuesta aún).
+  const fsearch = filters?.search?.trim();
+  if (fsearch) {
+    const contQt = quoteSchemaTable(dataSchema, "chat_contacts");
+    const digits = fsearch.replace(/\D/g, "");
+    // Escape para LIKE/ILIKE (%, _, backslash).
+    const nameLike = `%${fsearch.replace(/[\\%_]/g, "\\$&")}%`;
+    if (digits.length >= 3) {
+      // Coincidencia por teléfono (comparando solo dígitos, tolera +/espacios/guiones) o por nombre.
+      whereParts.push(
+        `contact_id IN (SELECT id FROM ${contQt} WHERE empresa_id = $1::uuid AND (` +
+          `regexp_replace(COALESCE(phone_normalized, phone_number, ''), '\\D', '', 'g') LIKE $${pi} ` +
+          `OR name ILIKE $${pi + 1} ESCAPE '\\'))`
+      );
+      params.push(`%${digits}%`, nameLike);
+      pi += 2;
+    } else {
+      whereParts.push(
+        `contact_id IN (SELECT id FROM ${contQt} WHERE empresa_id = $1::uuid AND name ILIKE $${pi} ESCAPE '\\')`
+      );
+      params.push(nameLike);
+      pi++;
+    }
+  }
+
   if (!bypass) {
     const scopeSql = await buildPgOmnicanalConversationScopeAndClause(
       pool,

@@ -459,8 +459,14 @@ export function ConversacionesClient({
       /* ignore */
     }
   }, [headerCollapsed]);
-  /** Filtro local del listado (nombre o teléfono); no altera la carga desde servidor. */
+  /**
+   * Búsqueda del listado (nombre o teléfono). Refina localmente lo cargado y, con
+   * debounce, también consulta al servidor (via `filters.search`) para encontrar
+   * conversaciones que no estén en la página actual.
+   */
   const [listSearch, setListSearch] = useState("");
+  const listSearchRef = useRef("");
+  listSearchRef.current = listSearch;
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [finalizeLoading, setFinalizeLoading] = useState(false);
   const [opPresenceLoaded, setOpPresenceLoaded] = useState(
@@ -556,7 +562,11 @@ export function ConversacionesClient({
     async (opts?: { silent?: boolean }) => {
       const silent = opts?.silent ?? false;
       const sp = new URLSearchParams(searchParamsRef.current?.toString() ?? "");
-      const filters = parseInboxFilters(sp);
+      const baseFilters = parseInboxFilters(sp);
+      const searchTerm = listSearchRef.current.trim();
+      const filters = searchTerm
+        ? { ...(baseFilters ?? {}), search: searchTerm }
+        : baseFilters;
       const previousCount = conversationsRef.current.length;
       if (silent) {
         chatListUiLog("refetch-start", {
@@ -683,7 +693,11 @@ export function ConversacionesClient({
     setLoadingMore(true);
     try {
       const sp = new URLSearchParams(searchParamsRef.current?.toString() ?? "");
-      const filters = parseInboxFilters(sp);
+      const baseFilters = parseInboxFilters(sp);
+      const searchTerm = listSearchRef.current.trim();
+      const filters = searchTerm
+        ? { ...(baseFilters ?? {}), search: searchTerm }
+        : baseFilters;
       const {
         conversations: rows,
         hasMore: pageHasMore,
@@ -881,6 +895,21 @@ export function ConversacionesClient({
     setLoadingList(true);
     void loadConversations();
   }, [loadConversations, inboxFilterKey]);
+
+  // Búsqueda server-side con debounce: al tipear en el buscador, además del filtro
+  // local, recargamos desde el servidor para traer coincidencias que no estén en la
+  // página actual. Se saltea el primer render (la carga inicial la hace el efecto de arriba).
+  const searchDebounceMountedRef = useRef(false);
+  useEffect(() => {
+    if (!searchDebounceMountedRef.current) {
+      searchDebounceMountedRef.current = true;
+      return;
+    }
+    const t = setTimeout(() => {
+      void loadConversationsRef.current?.();
+    }, 350);
+    return () => clearTimeout(t);
+  }, [listSearch]);
 
   useEffect(() => {
     listChatQueues()
