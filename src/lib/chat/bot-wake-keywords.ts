@@ -238,3 +238,72 @@ export function matchesConversationRestartKeyword(
 ): boolean {
   return isBotWakeKeyword(text, channelConfig ?? undefined, logCtx).matched;
 }
+
+/**
+ * Tipos de mensaje entrante que pueden despertar el bot por palabra clave.
+ * `text` mantiene el comportamiento histórico; los clics de botón (plantillas de
+ * campaña y replies interactivos) solo se evalúan con keywords propias del canal.
+ */
+export const BOT_WAKE_BUTTON_MESSAGE_TYPES = new Set(["button", "interactive"]);
+
+/**
+ * Placeholders que `extractMessageBody` usa cuando el clic no trae label legible.
+ * No son texto del cliente, así que nunca deben despertar el bot.
+ */
+function isPlaceholderButtonContent(content: string): boolean {
+  const t = content.trim();
+  if (!t) return true;
+  return /^\[(button|list|interactive)(:.*)?\]$/i.test(t);
+}
+
+export type BotWakeInboundEvaluation = BotWakeKeywordMatchMeta & {
+  /** Motivo cuando `matched=false`, para logs del webhook. */
+  skipReason?:
+    | "unsupported_message_type"
+    | "button_requires_channel_keywords"
+    | "placeholder_content";
+};
+
+/**
+ * Evalúa el despertar del bot para un entrante ya normalizado por el webhook.
+ *
+ * - `text`: igual que antes (keywords del canal si están configuradas, si no el set default).
+ * - `button` / `interactive`: usa el label del botón, pero **solo** si el canal tiene
+ *   `bot_wake_keywords_enabled` con lista propia. Sin ese opt-in los botones de navegación
+ *   de un flujo (p. ej. "Menú principal") harían match contra el set default y reiniciarían
+ *   el flujo en vez de avanzarlo.
+ * - Cualquier otro tipo (imagen, audio, documento…): nunca despierta.
+ */
+export function evaluateBotWakeForInbound(args: {
+  messageType: string;
+  content: string;
+  channelConfig: Record<string, unknown> | null | undefined;
+  /** `false` reproduce el comportamiento previo (solo `text`). Default `true`. */
+  allowButtonTypes?: boolean;
+  logCtx?: { channelId?: string; empresaId?: string };
+}): BotWakeInboundEvaluation {
+  const type = (args.messageType ?? "").trim().toLowerCase();
+
+  if (type === "text") {
+    return isBotWakeKeyword(args.content, args.channelConfig, args.logCtx);
+  }
+
+  if (args.allowButtonTypes === false || !BOT_WAKE_BUTTON_MESSAGE_TYPES.has(type)) {
+    return { matched: false, source: "default", skipReason: "unsupported_message_type" };
+  }
+
+  const { useCustom } = getBotWakeKeywordsForChannel(args.channelConfig ?? undefined);
+  if (!useCustom) {
+    return {
+      matched: false,
+      source: "default",
+      skipReason: "button_requires_channel_keywords",
+    };
+  }
+
+  if (isPlaceholderButtonContent(args.content)) {
+    return { matched: false, source: "channel_config", skipReason: "placeholder_content" };
+  }
+
+  return isBotWakeKeyword(args.content, args.channelConfig, args.logCtx);
+}

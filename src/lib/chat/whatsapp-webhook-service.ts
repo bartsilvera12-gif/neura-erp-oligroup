@@ -24,12 +24,12 @@ import {
 } from "@/lib/chat/conversation-send-context";
 import { attachInboundMessageMedia } from "@/lib/chat/inbound-media-attach";
 import { fetchChatChannelConfigForWebhookWakeKeywords } from "@/lib/chat/fetch-channel-config-webhook";
+import { evaluateBotWakeForInbound } from "@/lib/chat/bot-wake-keywords";
 import { maybeRestartForPurchaseIntent } from "@/lib/chat/flow-restart-intent";
 import {
   CONV_LOG,
   isFlowKnownAndActiveInCatalog,
   isNodeActiveInFlow,
-  matchesConversationRestartKeyword,
   matchesHumanHandoffKeyword,
   restartWhatsappConversationToFlowStart,
   syncWhatsappConversationFlowFromCatalog,
@@ -109,6 +109,13 @@ const WH_STATUS = "[whatsapp-status]";
  */
 const WEBHOOK_CLAIM_GATE_ENABLED =
   (process.env.WEBHOOK_CLAIM_GATE_ENABLED ?? "true").trim().toLowerCase() !== "false";
+
+/**
+ * Permite que un clic de botón (plantilla de campaña o reply interactivo) despierte el bot
+ * por palabra clave del canal. Ver `evaluateBotWakeForInbound`.
+ */
+const BOT_WAKE_ON_BUTTON_ENABLED =
+  (process.env.BOT_WAKE_ON_BUTTON_ENABLED ?? "true").trim().toLowerCase() !== "false";
 
 function contactNameForWa(
   contacts: MetaWebhookValue["contacts"],
@@ -956,13 +963,28 @@ export async function processInboundWebhookValue(
       /** Takeover por palabra/botón genérico: mensaje de confirmación tras persistir el entrante. */
       let keywordHandoffPendingConfirmation = false;
 
-      const restartKeywordMatch =
-        message_type === "text"
-          ? matchesConversationRestartKeyword(content, channelWakeConfig, {
-              channelId,
-              empresaId,
-            })
-          : false;
+      /**
+       * Despertar por palabra clave. Antes solo miraba `text`, así que un clic en el botón
+       * de una plantilla (llega como `button` / `interactive`) nunca reiniciaba el flujo y
+       * dependía exclusivamente de la acción de campaña. Ahora el label del botón también
+       * cuenta, siempre que el canal tenga sus propias keywords configuradas.
+       * Rollback sin git revert: `BOT_WAKE_ON_BUTTON_ENABLED=false` + redeploy.
+       */
+      const wakeEval = evaluateBotWakeForInbound({
+        messageType: message_type,
+        content,
+        allowButtonTypes: BOT_WAKE_ON_BUTTON_ENABLED,
+        channelConfig: channelWakeConfig,
+        logCtx: { channelId, empresaId },
+      });
+      const restartKeywordMatch = wakeEval.matched;
+      if (!restartKeywordMatch && wakeEval.skipReason && message_type !== "text") {
+        console.info(CONV_LOG, "bot_wake_button_skipped", {
+          conversationId,
+          message_type,
+          reason: wakeEval.skipReason,
+        });
+      }
 
       /**
        * Reinicio por palabra (hola, menú, iniciar…): debe aplicar también si el chat estaba en modo humano,
