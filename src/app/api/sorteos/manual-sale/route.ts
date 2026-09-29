@@ -15,6 +15,10 @@ import {
   flowDataStubFromEntrada,
 } from "@/lib/sorteos/sorteo-ticket-admin";
 import { maybeGenerateAndSendSorteoTicketDelivery } from "@/lib/sorteos/sorteo-ticket-delivery";
+import {
+  CODIGO_VERIFICADOR_ERROR,
+  isCodigoVerificadorValido,
+} from "@/lib/sorteos/revendedor-codigo-verificador";
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s.trim());
@@ -31,6 +35,8 @@ export type ManualSaleBody = {
   observacion_interna?: string | null;
   generar_ticket_png?: boolean;
   idempotency_key?: string;
+  /** Opcional: código verificador (4 dígitos) del revendedor al que se atribuye la venta. */
+  codigo_verificador?: string | null;
 };
 
 /**
@@ -63,6 +69,11 @@ export async function POST(request: NextRequest) {
       typeof body.observacion_interna === "string" ? body.observacion_interna.trim() : "";
     const generarTicket =
       typeof body.generar_ticket_png === "boolean" ? body.generar_ticket_png : true;
+    const codigoVerificador =
+      typeof body.codigo_verificador === "string" ? body.codigo_verificador.trim() : "";
+    if (codigoVerificador && !isCodigoVerificadorValido(codigoVerificador)) {
+      return NextResponse.json(errorResponse(CODIGO_VERIFICADOR_ERROR), { status: 400 });
+    }
 
     if (!sorteoId || !isUuid(sorteoId)) {
       return NextResponse.json(errorResponse("sorteo_id inválido."), { status: 400 });
@@ -105,6 +116,7 @@ export async function POST(request: NextRequest) {
       montoTotal,
       observacionInterna: observacion.length > 0 ? observacion : null,
       validadoPorUserId: ctx.auth.usuarioCatalogId ?? null,
+      codigoVerificador: codigoVerificador || null,
     });
 
     if (!created.ok) {
@@ -176,6 +188,7 @@ export async function POST(request: NextRequest) {
         cupones: created.cupones,
         estado_pago: created.estadoPago,
         monto_total: created.montoTotal,
+        revendedor_nombre: created.revendedorNombre ?? null,
         ticket,
       })
     );

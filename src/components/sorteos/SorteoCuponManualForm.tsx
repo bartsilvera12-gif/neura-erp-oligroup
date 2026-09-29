@@ -75,6 +75,7 @@ const EMPTY_FIELDS = {
   cantidad_boletos: "1",
   monto_total: "",
   observacion_interna: "",
+  codigo_verificador: "",
 };
 
 export default function SorteoCuponManualForm({
@@ -160,6 +161,7 @@ export default function SorteoCuponManualForm({
           observacion_interna: form.observacion_interna.trim() || null,
           generar_ticket_png: form.generar_ticket_png,
           idempotency_key: idempotencyKey,
+          codigo_verificador: form.codigo_verificador.trim() || null,
         }),
       });
       const json = (await res.json()) as {
@@ -167,6 +169,7 @@ export default function SorteoCuponManualForm({
         data?: {
           entrada_id?: string;
           numero_orden?: number;
+          revendedor_nombre?: string | null;
           ticket?: { attempted?: boolean; delivery_ok?: boolean; skipped?: boolean; reason?: string };
         };
         error?: string;
@@ -178,6 +181,9 @@ export default function SorteoCuponManualForm({
 
       const num = json.data?.numero_orden ?? "—";
       let msg = `Orden Nº ${num} creada correctamente (pago confirmado).`;
+      if (json.data?.revendedor_nombre) {
+        msg += ` Venta atribuida a ${json.data.revendedor_nombre}.`;
+      }
       const t = json.data?.ticket;
       if (form.generar_ticket_png && t?.attempted) {
         if (t.delivery_ok && t.skipped && t.reason === "text_only") {
@@ -327,6 +333,23 @@ export default function SorteoCuponManualForm({
           value="Efectivo"
           readOnly
           className="border border-slate-200 bg-slate-50 rounded px-2 py-2 text-sm text-slate-700"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1 text-xs text-slate-600">
+        Código verificador del revendedor (opcional)
+        <input
+          name="codigo_verificador"
+          value={form.codigo_verificador}
+          onChange={(e) =>
+            setForm((p) => ({ ...p, codigo_verificador: e.target.value.replace(/\D/g, "").slice(0, 4) }))
+          }
+          placeholder="4 dígitos"
+          inputMode="numeric"
+          pattern="\d{4}"
+          maxLength={4}
+          title="4 dígitos del revendedor, o vacío si la venta no es de un revendedor"
+          className="border border-slate-300 rounded px-2 py-2 text-sm font-mono tracking-widest"
         />
       </label>
 

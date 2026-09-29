@@ -46,9 +46,13 @@ export type SorteoManualCashInput = {
   montoTotal: number;
   observacionInterna?: string | null;
   validadoPorUserId?: string | null;
+  /** Código verificador (4 dígitos) del revendedor: atribuye la venta (revendedor_id). Opcional. */
+  codigoVerificador?: string | null;
 };
 
 export type SorteoManualCashFail = { ok: false; message: string };
+
+export type SorteoManualCashOk = DirectPgSorteoOk & { revendedorNombre?: string | null };
 
 function mapRowToOk(
   ex: { id: string; numero_orden: number; estado_pago: string },
@@ -82,7 +86,7 @@ function mapRowToOk(
  */
 export async function createSorteoManualCashSaleViaDirectPostgres(
   input: SorteoManualCashInput
-): Promise<DirectPgSorteoOk | SorteoManualCashFail> {
+): Promise<SorteoManualCashOk | SorteoManualCashFail> {
   const sch = input.schema.trim();
   const idem = input.idempotencyKey.trim();
   if (!idem) {
@@ -214,6 +218,36 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
       return { ok: false, message: "No hay boletos disponibles para esta cantidad." };
     }
 
+    /** Atribución a revendedor por código verificador (metadata.codigo_verificador), mismo sorteo. */
+    let revendedor: { id: string; nombre: string; codigo_referido: string | null } | null = null;
+    const codVer = (input.codigoVerificador ?? "").trim();
+    if (codVer) {
+      const revRes = await client.query<{
+        id: string;
+        nombre: string;
+        codigo_referido: string | null;
+        activo: boolean;
+      }>(
+        `SELECT id, nombre, codigo_referido, activo FROM ${qsch}.sorteo_revendedores
+         WHERE sorteo_id = $1 AND empresa_id = $2 AND metadata->>'codigo_verificador' = $3
+         LIMIT 1`,
+        [input.sorteoId, input.empresaId, codVer]
+      );
+      const rv = revRes.rows[0];
+      if (!rv) {
+        await client.query("ROLLBACK");
+        return {
+          ok: false,
+          message: `El código verificador ${codVer} no corresponde a ningún revendedor de este sorteo.`,
+        };
+      }
+      if (rv.activo === false) {
+        await client.query("ROLLBACK");
+        return { ok: false, message: `El revendedor ${rv.nombre} (código ${codVer}) está inactivo.` };
+      }
+      revendedor = { id: rv.id, nombre: rv.nombre, codigo_referido: rv.codigo_referido };
+    }
+
     const precioBase = Number(s.precio_por_boleto);
     const listaCalc = (Number.isFinite(precioBase) ? precioBase : 0) * qty;
     let precioFuenteIns: "lista" | "promo";
@@ -303,6 +337,12 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
     if (entCols.has("pago_metodo")) {
       rowEnt.pago_metodo = "efectivo";
     }
+    if (revendedor && entCols.has("revendedor_id")) {
+      rowEnt.revendedor_id = revendedor.id;
+    }
+    if (revendedor && entCols.has("codigo_referido_snapshot")) {
+      rowEnt.codigo_referido_snapshot = revendedor.codigo_referido;
+    }
 
     const insertCols = Object.keys(rowEnt).filter((k) => entCols.has(k));
     const vals = insertCols.map((k) => rowEnt[k]);
@@ -376,6 +416,7 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
       promoNombre: "",
       precioFuente: precioFuenteIns,
       estadoPago: "confirmado",
+      revendedorNombre: revendedor?.nombre ?? null,
     };
   } catch (err: unknown) {
     await client.query("ROLLBACK").catch(() => {});
