@@ -25,6 +25,7 @@ import {
   Banknote,
   Megaphone,
   Ticket,
+  TicketPlus,
   SendHorizontal,
   MessageCircle,
   History,
@@ -185,6 +186,14 @@ const MENU_STRUCTURE: MenuItem[] = [
       { label: "Tickets / Comprobantes", href: "/sorteos/tickets", exactMatch: true },
     ],
   },
+  /** Acceso directo al alta manual de cupones; mismo permiso que Sorteos (slug `sorteos`). */
+  {
+    key: "cupones-manuales",
+    slug: "sorteos",
+    label: "Cupones manuales",
+    href: "/sorteos/cupones-manuales",
+    icon: TicketPlus,
+  },
   {
     key: "etiquetas",
     slug: "etiquetas",
@@ -194,8 +203,22 @@ const MENU_STRUCTURE: MenuItem[] = [
   },
 ];
 
+/** Id de favorito: el del módulo, salvo accesos directos que comparten slug (usan su `key`). */
+function menuItemFavId(item: MenuItem, slugToId: (slug: string) => string): string {
+  return item.key === item.slug ? slugToId(item.slug) : item.key;
+}
+
+/** Hay un ítem de primer nivel más específico para esta ruta (p. ej. /sorteos/cupones-manuales). */
+function hasMoreSpecificMenuItem(path: string, href: string): boolean {
+  return MENU_STRUCTURE.some(
+    (other) =>
+      other.href.startsWith(href + "/") &&
+      (path === other.href || path.startsWith(other.href + "/"))
+  );
+}
+
 function modulosSyntheticFromMenu(): ModuloEmpresa[] {
-  return MENU_STRUCTURE.map((item) => ({
+  return MENU_STRUCTURE.filter((item) => item.key === item.slug).map((item) => ({
     id: item.slug,
     nombre: item.label,
     slug: item.slug,
@@ -511,6 +534,7 @@ export default function Sidebar() {
   const isActive = (slug: string, href: string) => {
     const p = pathname ?? "";
     if (slug === "dashboard") return p === "/";
+    if (hasMoreSpecificMenuItem(p, href)) return false;
     return p === href || p.startsWith(href + "/");
   };
 
@@ -526,7 +550,7 @@ export default function Sidebar() {
     const access = (slug: string) => canAccessSidebarSlug(slug, slugs, esSuperAdmin);
     return MENU_STRUCTURE.filter(
       (item) =>
-        favoritos.includes(idForSlug(item.slug)) &&
+        favoritos.includes(menuItemFavId(item, idForSlug)) &&
         access(item.slug) &&
         menuItemMatchesQuery(item, menuSearchQuery)
     );
@@ -538,7 +562,7 @@ export default function Sidebar() {
     const access = (slug: string) => canAccessSidebarSlug(slug, slugs, esSuperAdmin);
     return MENU_STRUCTURE.filter(
       (item) =>
-        !favoritos.includes(idForSlug(item.slug)) &&
+        !favoritos.includes(menuItemFavId(item, idForSlug)) &&
         access(item.slug) &&
         menuItemMatchesQuery(item, menuSearchQuery)
     );
@@ -647,7 +671,7 @@ export default function Sidebar() {
                 <NavItem
                   key={item.key}
                   item={item}
-                  itemId={slugToId(item.slug)}
+                  itemId={menuItemFavId(item, slugToId)}
                   isActive={isActive(item.slug, item.href)}
                   isFavorito={true}
                   onToggleFavorito={handleToggleFavorito}
@@ -683,9 +707,9 @@ export default function Sidebar() {
               <NavItem
                 key={item.key}
                 item={item}
-                itemId={slugToId(item.slug)}
+                itemId={menuItemFavId(item, slugToId)}
                 isActive={isActive(item.slug, item.href)}
-                isFavorito={favoritos.includes(slugToId(item.slug))}
+                isFavorito={favoritos.includes(menuItemFavId(item, slugToId))}
                 onToggleFavorito={handleToggleFavorito}
                 hasAccess={hasAccess(item.slug)}
                 collapsed={collapsed}
