@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getChatServiceClientForEmpresa } from "@/app/api/chat/_chat-service-client";
 import { successResponse, errorResponse } from "@/lib/api/response";
+import { describeUpstreamError } from "@/lib/api/upstream-error";
 import { requireCampanasApiAccess } from "@/lib/campaigns/campaign-auth";
 import {
   applyHeaderImageSendConfigUpdate,
@@ -160,7 +161,13 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
       });
     }
 
-    const UPDATE_CHUNK = 500;
+    /**
+     * `UPDATE ... IN (...)` manda los ids en la QUERY STRING, no en el body: con
+     * 500 UUIDs la URL pasa los 18 KB y Cloudflare/nginx la cortan (se veía como
+     * un 520 con una página HTML de error). 100 ids son ~3,7 KB, bien por debajo
+     * del límite habitual de 8 KB.
+     */
+    const UPDATE_CHUNK = 100;
     for (const { patch, ids } of updateGroups.values()) {
       for (let i = 0; i < ids.length; i += UPDATE_CHUNK) {
         const chunk = ids.slice(i, i + UPDATE_CHUNK);
@@ -177,7 +184,7 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
             error: updErr.message,
           });
           return NextResponse.json(
-            errorResponse(`No se pudo validar la lista completa: ${updErr.message}`),
+            errorResponse(`No se pudo validar la lista completa. ${describeUpstreamError(updErr.message)}`),
             { status: 400 }
           );
         }

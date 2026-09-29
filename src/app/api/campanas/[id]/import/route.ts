@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getChatServiceClientForEmpresa } from "@/app/api/chat/_chat-service-client";
 import { successResponse, errorResponse } from "@/lib/api/response";
+import { describeUpstreamError } from "@/lib/api/upstream-error";
 import { requireCampanasApiAccess } from "@/lib/campaigns/campaign-auth";
 import {
   parseCampaignSpreadsheet,
@@ -184,7 +185,7 @@ export async function POST(request: NextRequest, ctx: RouteCtx) {
         });
         return NextResponse.json(
           errorResponse(
-            `No se pudo importar la lista completa (${insErr.message}). No quedaron destinatarios cargados: volvé a subir el archivo.`
+            `No se pudo importar la lista completa. ${describeUpstreamError(insErr.message)} No quedaron destinatarios cargados: volvé a subir el archivo.`
           ),
           { status: 400 }
         );
