@@ -18,6 +18,7 @@ export default function EditarRevendedorPage() {
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
   const [codigo, setCodigo] = useState("");
+  const [verificador, setVerificador] = useState("");
   const [activo, setActivo] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -33,6 +34,7 @@ export default function EditarRevendedorPage() {
           setNombre(r.nombre);
           setTelefono(r.telefono ?? "");
           setCodigo(r.codigo_referido);
+          setVerificador(r.codigo_verificador ?? "");
           setActivo(r.activo);
         }
       })
@@ -49,6 +51,7 @@ export default function EditarRevendedorPage() {
         nombre,
         telefono: telefono.trim() || null,
         codigo_referido: codigo.trim(),
+        codigo_verificador: verificador,
         activo,
       });
       router.push(`/sorteos/${sorteoId}/revendedores`);
@@ -112,6 +115,21 @@ export default function EditarRevendedorPage() {
             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
             value={codigo}
             onChange={(e) => setCodigo(e.target.value)}
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Código verificador (4 dígitos)</label>
+          <input
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono tracking-widest"
+            value={verificador}
+            onChange={(e) => setVerificador(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="1234"
+            inputMode="numeric"
+            pattern="\d{4}"
+            minLength={4}
+            maxLength={4}
+            title="Exactamente 4 dígitos"
             required
           />
         </div>

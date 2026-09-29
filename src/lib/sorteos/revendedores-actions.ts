@@ -1,4 +1,5 @@
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
+import { readCodigoVerificador } from "@/lib/sorteos/revendedor-codigo-verificador";
 
 export type SorteoRevendedorRow = {
   id: string;
@@ -7,6 +8,8 @@ export type SorteoRevendedorRow = {
   nombre: string;
   telefono: string | null;
   codigo_referido: string;
+  /** 4 dígitos, en metadata.codigo_verificador. */
+  codigo_verificador: string | null;
   activo: boolean;
   metadata: Record<string, unknown>;
   created_at: string;
@@ -21,6 +24,7 @@ function mapRev(r: Record<string, unknown>): SorteoRevendedorRow {
     nombre: (r.nombre as string) ?? "",
     telefono: (r.telefono as string) ?? null,
     codigo_referido: (r.codigo_referido as string) ?? "",
+    codigo_verificador: readCodigoVerificador(r.metadata),
     activo: r.activo === true,
     metadata:
       typeof r.metadata === "object" && r.metadata !== null && !Array.isArray(r.metadata)
@@ -62,6 +66,7 @@ export type RevendedorInput = {
   nombre: string;
   telefono?: string | null;
   codigo_referido: string;
+  codigo_verificador?: string;
   activo?: boolean;
 };
 
@@ -73,6 +78,9 @@ export async function createRevendedor(sorteoId: string, input: RevendedorInput)
       nombre: input.nombre.trim(),
       telefono: input.telefono?.trim() || null,
       codigo_referido: input.codigo_referido.trim(),
+      ...(input.codigo_verificador !== undefined
+        ? { codigo_verificador: input.codigo_verificador.trim() }
+        : {}),
       activo: input.activo !== false,
     }),
   });
@@ -99,6 +107,9 @@ export async function updateRevendedor(
       nombre: input.nombre.trim(),
       telefono: input.telefono?.trim() || null,
       codigo_referido: input.codigo_referido.trim(),
+      ...(input.codigo_verificador !== undefined
+        ? { codigo_verificador: input.codigo_verificador.trim() }
+        : {}),
       activo: input.activo !== false,
     }),
   });

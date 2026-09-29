@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import { createRevendedor } from "@/lib/sorteos/revendedores-actions";
@@ -10,6 +11,7 @@ type RevRow = {
   id: string;
   nombre: string;
   codigo_referido: string | null;
+  codigo_verificador: string | null;
   telefono: string | null;
   activo: boolean;
   clicks: number;
@@ -48,6 +50,7 @@ export default function RevendedoresModulePage() {
   const [nNombre, setNNombre] = useState("");
   const [nTelefono, setNTelefono] = useState("");
   const [nCodigo, setNCodigo] = useState("");
+  const [nVerificador, setNVerificador] = useState("");
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
 
@@ -160,11 +163,13 @@ export default function RevendedoresModulePage() {
           nombre: nNombre,
           telefono: nTelefono.trim() || null,
           codigo_referido: nCodigo,
+          codigo_verificador: nVerificador,
           activo: true,
         });
         setNNombre("");
         setNTelefono("");
         setNCodigo("");
+        setNVerificador("");
         setShowForm(false);
         await load(sorteoId);
       } catch (ex) {
@@ -173,7 +178,7 @@ export default function RevendedoresModulePage() {
         setCreating(false);
       }
     },
-    [sorteoId, creating, nNombre, nTelefono, nCodigo, load]
+    [sorteoId, creating, nNombre, nTelefono, nCodigo, nVerificador, load]
   );
 
   // Descarga por revendedor: clave `${revId}:${format}` mientras genera.
@@ -260,7 +265,7 @@ export default function RevendedoresModulePage() {
           onSubmit={handleCreate}
           className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
         >
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <div className="sm:col-span-1">
               <label className="mb-1 block text-xs font-medium text-slate-600">Nombre</label>
               <input
@@ -287,6 +292,21 @@ export default function RevendedoresModulePage() {
                 value={nCodigo}
                 onChange={(e) => setNCodigo(e.target.value)}
                 placeholder="TRIPLE70001"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">Código verificador (4 dígitos)</label>
+              <input
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono tracking-widest focus:border-[#4FAEB2] focus:outline-none"
+                value={nVerificador}
+                onChange={(e) => setNVerificador(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                placeholder="1234"
+                inputMode="numeric"
+                pattern="\d{4}"
+                minLength={4}
+                maxLength={4}
+                title="Exactamente 4 dígitos"
                 required
               />
             </div>
@@ -343,6 +363,7 @@ export default function RevendedoresModulePage() {
                 <th className="px-4 py-3 font-semibold">#</th>
                 <th className="px-4 py-3 font-semibold">Vendedor</th>
                 <th className="px-4 py-3 font-semibold">Código</th>
+                <th className="px-4 py-3 font-semibold">Verificador</th>
                 <th className="px-4 py-3 font-semibold text-right">Clics</th>
                 <th className="px-4 py-3 font-semibold text-right">Ventas</th>
                 <th className="px-4 py-3 font-semibold text-right">Boletos</th>
@@ -354,11 +375,11 @@ export default function RevendedoresModulePage() {
             <tbody className="divide-y divide-slate-100">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-slate-400">Cargando…</td>
+                  <td colSpan={10} className="px-4 py-8 text-center text-slate-400">Cargando…</td>
                 </tr>
               ) : revs.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
+                  <td colSpan={10} className="px-4 py-8 text-center text-slate-400">
                     Este sorteo no tiene revendedores cargados.
                   </td>
                 </tr>
@@ -373,6 +394,20 @@ export default function RevendedoresModulePage() {
                     </td>
                     <td className="px-4 py-3">
                       <span className="font-mono text-xs bg-slate-100 rounded px-1.5 py-0.5 text-slate-700">{rev.codigo_referido ?? "—"}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {rev.codigo_verificador ? (
+                        <span className="font-mono text-xs font-semibold tracking-widest bg-[#4FAEB2]/10 text-[#3F8E91] rounded px-1.5 py-0.5">
+                          {rev.codigo_verificador}
+                        </span>
+                      ) : (
+                        <Link
+                          href={`/sorteos/${sorteoId}/revendedores/${rev.id}/editar`}
+                          className="text-[11px] font-medium text-amber-700 hover:underline"
+                        >
+                          Asignar
+                        </Link>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">{rev.clicks}</td>
                     <td className="px-4 py-3 text-right tabular-nums">

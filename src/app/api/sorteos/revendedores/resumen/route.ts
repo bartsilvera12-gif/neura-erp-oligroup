@@ -4,6 +4,7 @@ import { getTenantSupabaseFromAuth } from "@/lib/supabase/tenant-api";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { API_ERRORS } from "@/lib/api/errors";
 import { revendedorReportSlug } from "@/lib/sorteos/revendedor-report-token";
+import { readCodigoVerificador } from "@/lib/sorteos/revendedor-codigo-verificador";
 
 const VALID_STATES = ["confirmado", "pendiente_revision"];
 
@@ -11,6 +12,7 @@ export type RevendedorResumenRow = {
   id: string;
   nombre: string;
   codigo_referido: string | null;
+  codigo_verificador: string | null;
   telefono: string | null;
   activo: boolean;
   clicks: number;
@@ -46,7 +48,7 @@ export async function GET(request: NextRequest) {
     // Revendedores del sorteo
     const { data: revRows, error: eRev } = await sb
       .from("sorteo_revendedores")
-      .select("id, nombre, codigo_referido, telefono, activo")
+      .select("id, nombre, codigo_referido, telefono, activo, metadata")
       .eq("empresa_id", empresaId)
       .eq("sorteo_id", sorteoId)
       .order("nombre", { ascending: true });
@@ -58,6 +60,7 @@ export async function GET(request: NextRequest) {
       codigo_referido: string | null;
       telefono: string | null;
       activo: boolean;
+      metadata: unknown;
     }>;
 
     const out: RevendedorResumenRow[] = [];
@@ -89,6 +92,7 @@ export async function GET(request: NextRequest) {
         id: rv.id,
         nombre: rv.nombre,
         codigo_referido: rv.codigo_referido,
+        codigo_verificador: readCodigoVerificador(rv.metadata),
         telefono: rv.telefono,
         activo: rv.activo,
         clicks,

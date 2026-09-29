@@ -32,6 +32,7 @@ export default function SorteoRevendedoresClient(props: {
   const [nombre, setNombre] = useState("");
   const [telefono, setTelefono] = useState("");
   const [codigo, setCodigo] = useState("");
+  const [verificador, setVerificador] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [statsById, setStatsById] = useState<Record<string, RevendedorStats>>({});
@@ -63,11 +64,13 @@ export default function SorteoRevendedoresClient(props: {
         nombre,
         telefono: telefono.trim() || null,
         codigo_referido: codigo.trim(),
+        codigo_verificador: verificador,
         activo: true,
       });
       setNombre("");
       setTelefono("");
       setCodigo("");
+      setVerificador("");
       await refresh();
     } catch (ex) {
       setErr(ex instanceof Error ? ex.message : "Error al crear");
@@ -154,6 +157,21 @@ export default function SorteoRevendedoresClient(props: {
               required
             />
           </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Código verificador (4 dígitos)</label>
+            <input
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono tracking-widest"
+              value={verificador}
+              onChange={(e) => setVerificador(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              placeholder="1234"
+              inputMode="numeric"
+              pattern="\d{4}"
+              minLength={4}
+              maxLength={4}
+              title="Exactamente 4 dígitos"
+              required
+            />
+          </div>
           <div className="sm:col-span-2">
             <button
               type="submit"
@@ -187,6 +205,9 @@ export default function SorteoRevendedoresClient(props: {
                     <div>
                       <div className="font-semibold text-slate-900">{r.nombre}</div>
                       <div className="text-xs text-slate-500 font-mono">código: {r.codigo_referido}</div>
+                      <div className="text-xs text-slate-500 font-mono">
+                        verificador: {r.codigo_verificador ?? "— (sin asignar)"}
+                      </div>
                       {r.telefono ? (
                         <div className="text-xs text-slate-500">tel: {r.telefono}</div>
                       ) : null}
