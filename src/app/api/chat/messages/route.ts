@@ -8,6 +8,7 @@ import { isLikelyUnexposedTenantChatSchema } from "@/lib/supabase/chat-data-sche
 import { getTenantSupabaseFromAuth } from "@/lib/supabase/tenant-api";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { API_ERRORS } from "@/lib/api/errors";
+import { attachCampaignTemplateDisplay } from "@/lib/chat/attach-campaign-template-display";
 
 /**
  * GET /api/chat/messages?conversation_id=…
@@ -56,7 +57,9 @@ export async function GET(request: NextRequest) {
       }
 
       const rows = await pgSelectChatMessagesForInboxApi(pool, dataSchema, conversationId);
-      return NextResponse.json(successResponse(rows));
+      return NextResponse.json(
+        successResponse(await attachCampaignTemplateDisplay(auth.empresa_id, rows as Record<string, unknown>[]))
+      );
     }
 
     const { data: conv, error: cErr } = await supabase
@@ -100,7 +103,9 @@ export async function GET(request: NextRequest) {
     if (error) {
       return NextResponse.json(errorResponse(error.message), { status: 400 });
     }
-    return NextResponse.json(successResponse(data ?? []));
+    return NextResponse.json(
+      successResponse(await attachCampaignTemplateDisplay(auth.empresa_id, (data ?? []) as Record<string, unknown>[]))
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Error";
     return NextResponse.json(errorResponse(msg), { status: 500 });

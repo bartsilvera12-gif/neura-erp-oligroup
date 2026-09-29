@@ -63,6 +63,10 @@ import type { OmnicanalOperatorRole } from "@/lib/chat/omnicanal-supervision-rea
 import { playInboxNotificationBeep, readInboxNotificationSoundEnabled } from "@/lib/chat/inbox-notification-preference";
 import { createBrowserClientForSchema } from "@/lib/supabase";
 import { ChannelBadge } from "@/components/chat/ChannelBadge";
+import {
+  splitCampaignTemplateContent,
+  type CampaignTemplateDisplay,
+} from "@/lib/campaigns/campaign-template-display";
 
 type ChatMessage = {
   id: string;
@@ -71,6 +75,8 @@ type ChatMessage = {
   content: string | null;
   created_at: string;
   raw_payload?: Record<string, unknown> | null;
+  /** Solo mensajes `template` de campañas: media de cabecera + botones (lo arma /api/chat/messages). */
+  template_display?: CampaignTemplateDisplay | null;
 };
 
 function isHumanContactName(name: string | null | undefined, phone?: string | null): boolean {
@@ -119,6 +125,10 @@ function mapRowToMessage(row: Record<string, unknown>): ChatMessage {
     raw_payload:
       typeof row.raw_payload === "object" && row.raw_payload !== null
         ? (row.raw_payload as Record<string, unknown>)
+        : null,
+    template_display:
+      typeof row.template_display === "object" && row.template_display !== null
+        ? (row.template_display as CampaignTemplateDisplay)
         : null,
   };
 }
@@ -1313,7 +1323,8 @@ export function ConversacionesClient({
         let next: ChatMessage[];
         if (i >= 0) {
           next = [...prev];
-          next[i] = msg;
+          // Realtime no trae template_display (lo arma la API): conservar el que ya teníamos.
+          next[i] = msg.template_display ? msg : { ...msg, template_display: prev[i].template_display ?? null };
         } else {
           next = [...prev, msg].sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
@@ -3329,6 +3340,89 @@ export function ConversacionesClient({
                                   ) : null}
                                   {!parsed.url && !parsed.caption ? (
                                     <p className="whitespace-pre-wrap break-words">{m.content}</p>
+                                  ) : null}
+                                </div>
+                              );
+                            })()
+                          ) : m.message_type === "template" && m.template_display ? (
+                            (() => {
+                              const td = m.template_display;
+                              const { label, body } = splitCampaignTemplateContent(m.content);
+                              const btnCls = m.from_me
+                                ? "border-white/35 bg-white/10 text-white hover:bg-white/20"
+                                : "border-slate-200 bg-slate-50 text-slate-800 hover:bg-slate-100";
+                              return (
+                                <div className="space-y-2">
+                                  {td.header_url && td.header_format === "VIDEO" ? (
+                                    <video
+                                      src={td.header_url}
+                                      controls
+                                      preload="metadata"
+                                      playsInline
+                                      className="max-h-72 w-full rounded-lg bg-black/20"
+                                    />
+                                  ) : td.header_url && td.header_format === "IMAGE" ? (
+                                    <button
+                                      type="button"
+                                      className="p-0 border-0 bg-transparent cursor-zoom-in text-left"
+                                      onClick={() => setLightboxUrl(td.header_url!)}
+                                    >
+                                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                                      <img
+                                        src={td.header_url}
+                                        alt="Imagen de la plantilla"
+                                        className="max-h-72 rounded-lg border border-white/30 bg-white object-contain"
+                                      />
+                                    </button>
+                                  ) : td.header_url && td.header_format === "DOCUMENT" ? (
+                                    <a
+                                      href={td.header_url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className={`block rounded-lg border px-3 py-2 text-xs font-semibold no-underline ${btnCls}`}
+                                    >
+                                      📎 Documento adjunto
+                                    </a>
+                                  ) : td.header_format === "TEXT" && td.header_text ? (
+                                    <p className="font-semibold whitespace-pre-wrap break-words">{td.header_text}</p>
+                                  ) : null}
+                                  {label ? (
+                                    <p className={`text-[10px] ${m.from_me ? "text-white/70" : "text-slate-400"}`}>
+                                      Plantilla: {label}
+                                    </p>
+                                  ) : null}
+                                  <p className="whitespace-pre-wrap break-words">{body}</p>
+                                  {td.footer_text ? (
+                                    <p className={`text-[11px] ${m.from_me ? "text-white/75" : "text-slate-500"}`}>
+                                      {td.footer_text}
+                                    </p>
+                                  ) : null}
+                                  {td.buttons.length > 0 ? (
+                                    <div
+                                      className={`space-y-1.5 border-t pt-2 ${m.from_me ? "border-white/25" : "border-slate-200"}`}
+                                    >
+                                      {td.buttons.map((b, bi) =>
+                                        b.type === "URL" && b.url ? (
+                                          <a
+                                            key={bi}
+                                            href={b.url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className={`block rounded-lg border px-3 py-1.5 text-center text-xs font-medium no-underline transition-colors ${btnCls}`}
+                                          >
+                                            🔗 {b.text}
+                                          </a>
+                                        ) : (
+                                          <div
+                                            key={bi}
+                                            className={`rounded-lg border px-3 py-1.5 text-center text-xs font-medium ${btnCls}`}
+                                          >
+                                            {b.type === "PHONE_NUMBER" ? "📞 " : ""}
+                                            {b.text}
+                                          </div>
+                                        )
+                                      )}
+                                    </div>
                                   ) : null}
                                 </div>
                               );
