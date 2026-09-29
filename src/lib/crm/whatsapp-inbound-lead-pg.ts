@@ -8,6 +8,7 @@ import type { Pool } from "pg";
 import { quoteSchemaTable } from "@/lib/supabase/chat-pg-pool";
 import { assertAllowedChatDataSchema } from "@/lib/supabase/chat-data-schema";
 import { SUPABASE_APP_SCHEMA } from "@/lib/supabase/schema";
+import { isSingleClientMode } from "@/lib/instance/single-client";
 import {
   ensureDefaultCrmEtapasForCrmSchemaClient,
   resolveCrmProspectosSchemaForTenant,
@@ -32,6 +33,12 @@ export async function ensureWhatsappInboundCrmLeadPg(input: {
   const conv = quoteSchemaTable(schema, "chat_conversations");
   const ch = quoteSchemaTable(schema, "chat_channels");
   const ag = quoteSchemaTable(schema, "chat_agents");
+  // `usuarios` es catálogo de identidad. En single_client fue copiado al schema
+  // operativo del tenant (junto al resto del catálogo), así que vive en `schema`.
+  // En multi-tenant legacy vive en `public`. Resolver schema-aware (no hardcodear).
+  const usuariosTable = isSingleClientMode()
+    ? quoteSchemaTable(schema, "usuarios")
+    : "public.usuarios";
 
   const client = await input.pool.connect();
   try {
@@ -151,7 +158,7 @@ export async function ensureWhatsappInboundCrmLeadPg(input: {
               u.email::text AS email
        FROM ${conv} c
        LEFT JOIN ${ag} a ON a.id = c.assigned_agent_id AND a.empresa_id = c.empresa_id
-       LEFT JOIN public.usuarios u ON u.id = a.usuario_id
+       LEFT JOIN ${usuariosTable} u ON u.id = a.usuario_id
        WHERE c.id = $1::uuid AND c.empresa_id = $2::uuid
        LIMIT 1`,
       [input.conversation_id, input.empresa_id]
