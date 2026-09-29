@@ -2,8 +2,13 @@ import "server-only";
 import * as XLSX from "xlsx";
 import { normalizeCampaignPhone } from "@/lib/campaigns/campaign-phone";
 
-export const CAMPAIGN_IMPORT_MAX_ROWS = 5000;
-export const CAMPAIGN_IMPORT_MAX_BYTES = 5 * 1024 * 1024;
+/** Re-export por compatibilidad: la fuente de verdad es `campaign-import-limits`. */
+export {
+  CAMPAIGN_IMPORT_MAX_ROWS,
+  CAMPAIGN_IMPORT_MAX_BYTES,
+  formatCampaignImportMaxRows,
+  formatCampaignImportMaxSize,
+} from "@/lib/campaigns/campaign-import-limits";
 
 export type ParsedSheet = {
   headers: string[];
