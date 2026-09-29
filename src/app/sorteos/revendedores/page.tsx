@@ -221,6 +221,31 @@ export default function RevendedoresModulePage() {
 
   const totales = data?.totales;
   const revs = useMemo(() => data?.revendedores ?? [], [data]);
+  const sinVerificador = revs.filter((r) => !r.codigo_verificador).length;
+
+  const [asignando, setAsignando] = useState(false);
+  const asignarVerificadores = useCallback(async () => {
+    if (!sorteoId || asignando) return;
+    setAsignando(true);
+    setErr(null);
+    try {
+      const res = await fetchWithSupabaseSession("/api/sorteos/revendedores/verificadores", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sorteo_id: sorteoId }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!res.ok || !json.success) {
+        setErr(json.error ?? `Error ${res.status}`);
+        return;
+      }
+      await load(sorteoId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Error de red");
+    } finally {
+      setAsignando(false);
+    }
+  }, [sorteoId, asignando, load]);
 
   return (
     <div className="p-4 sm:p-6 max-w-6xl mx-auto">
@@ -352,6 +377,24 @@ export default function RevendedoresModulePage() {
 
       {err ? (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</div>
+      ) : null}
+
+      {!loading && sinVerificador > 0 ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <span>
+            {sinVerificador === 1
+              ? "1 revendedor no tiene código verificador."
+              : `${sinVerificador} revendedores no tienen código verificador.`}
+          </span>
+          <button
+            type="button"
+            disabled={asignando}
+            onClick={() => void asignarVerificadores()}
+            className="rounded-lg bg-[#4FAEB2] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#3F8E91] disabled:opacity-50"
+          >
+            {asignando ? "Asignando…" : "Asignar códigos automáticamente"}
+          </button>
+        </div>
       ) : null}
 
       {/* Leaderboard */}
