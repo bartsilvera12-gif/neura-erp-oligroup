@@ -4,7 +4,7 @@ import SorteosCuponesManualesPageClient from "@/components/sorteos/SorteosCupone
 
 export default function SorteoCuponesManualesPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-5 sm:space-y-6">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-2 text-xs text-slate-500">
         <Link href="/sorteos" className="font-medium text-slate-500 transition-colors hover:text-[#4FAEB2]">
@@ -25,7 +25,7 @@ export default function SorteoCuponesManualesPage() {
             Sorteos · Cupones manuales
           </p>
         </div>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">Cupones manuales</h1>
+        <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">Cupones manuales</h1>
         <p className="mt-1 text-sm text-slate-500">
           Registrá manualmente una participación y generá sus cupones.
         </p>
