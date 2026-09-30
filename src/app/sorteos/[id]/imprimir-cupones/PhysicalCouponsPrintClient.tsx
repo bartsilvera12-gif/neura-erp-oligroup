@@ -10,7 +10,7 @@ import type {
 } from "@/lib/sorteos/physical-coupons-print";
 import type { SorteoEntradaEstadoPago } from "@/lib/sorteos/types";
 
-type PrintFormat = "thermal_58" | "thermal_80" | "a4" | "oficio";
+export type PrintFormat = "thermal_58" | "thermal_80" | "a4" | "oficio";
 
 const PRINT_FORMAT_STORAGE_KEY = "neura:sorteos:physical-coupons:print-format";
 const THERMAL_CUT_STORAGE_KEY = "neura:sorteos:physical-coupons:thermal-cut-each";
@@ -146,7 +146,7 @@ function buildSheetBody(rows: PhysicalCouponPrintRow[], layout: FormatLayout): s
     .join("");
 }
 
-function buildThermalBody(rows: PhysicalCouponPrintRow[], cutEachCoupon: boolean): string {
+export function buildThermalBody(rows: PhysicalCouponPrintRow[], cutEachCoupon: boolean): string {
   const cls = cutEachCoupon ? "coupon-card coupon-card--cut" : "coupon-card";
   const articles = rows
     .map((row) => `<article class="${cls}">${renderCouponInner(row)}</article>`)
@@ -154,7 +154,7 @@ function buildThermalBody(rows: PhysicalCouponPrintRow[], cutEachCoupon: boolean
   return `<section class="thermal-ticket-list">${articles}</section>`;
 }
 
-function buildFormatCss(format: PrintFormat, cutEachCoupon: boolean): string {
+export function buildFormatCss(format: PrintFormat, cutEachCoupon: boolean): string {
   const layout = FORMAT_LAYOUTS[format];
 
   if (layout.kind === "thermal") {

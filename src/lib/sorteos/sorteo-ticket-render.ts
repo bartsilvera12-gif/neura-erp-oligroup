@@ -46,10 +46,70 @@ function dataUrlFromBuffer(buf: Buffer, mime: string): string {
   return `data:${mime};base64,${b64}`;
 }
 
+/**
+ * Muchos cupones: grilla de 3–4 columnas dentro de `avail` px de alto (sin pisar la fecha).
+ * Si aun así no entran, se muestran los que caben y una línea "+N más".
+ */
+function cuponesGridSvg(
+  cupones: string[],
+  yStart: number,
+  avail: number,
+  primary: string,
+  accent: string
+): string {
+  const n = cupones.length;
+  /** Aire bajo el título "CUPONES" para que la primera fila no lo toque. */
+  yStart += 12;
+  avail -= 12;
+  const cols = n <= 12 ? 3 : 4;
+  let fs = cols === 3 ? 36 : 32;
+  let rowH = fs + 16;
+  const rowsNeeded = Math.ceil(n / cols);
+  if ((rowsNeeded - 1) * rowH > avail) {
+    rowH = Math.max(30, Math.floor(avail / Math.max(1, rowsNeeded - 1)));
+    fs = Math.max(20, rowH - 12);
+  }
+  const maxRows = Math.floor(avail / rowH) + 1;
+  const showAll = rowsNeeded <= maxRows;
+  const maxShow = showAll ? n : cols * Math.max(1, maxRows - 1);
+  const cellW = (WA - 2 * PAD) / cols;
+  const out: string[] = [];
+  for (let i = 0; i < Math.min(n, maxShow); i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    out.push(
+      svgTextAsPath({
+        text: cupones[i]!,
+        x: PAD + col * cellW + cellW / 2,
+        y: yStart + row * rowH,
+        fontSize: fs,
+        weight: 700,
+        fill: primary,
+        textAnchor: "middle",
+      })
+    );
+  }
+  if (!showAll) {
+    out.push(
+      svgTextAsPath({
+        text: `+${n - maxShow} más`,
+        x: WA / 2,
+        y: yStart + Math.ceil(maxShow / cols) * rowH,
+        fontSize: 22,
+        weight: 600,
+        fill: accent,
+        textAnchor: "middle",
+      })
+    );
+  }
+  return out.filter(Boolean).join("\n");
+}
+
 /** Cupón(es): tipografía grande, centrado en bloque (paths: librsvg ignora &lt;text&gt;+fuentes) */
 function cuponesAutoSvg(
   cupones: string[],
   yStart: number,
+  yEnd: number,
   primary: string,
   accent: string
 ): string {
@@ -77,9 +137,15 @@ function cuponesAutoSvg(
     });
   }
   const lines: string[] = [];
-  let y = yStart;
   const fs = cupones.length <= 4 ? 56 : cupones.length <= 9 ? 40 : 32;
   const step = fs + 14;
+  /** Primera línea base bajo el título "CUPONES": las letras grandes necesitan más aire. */
+  let y = yStart + Math.max(0, fs - 24);
+  /** Si en una columna no entran antes de la fecha del pie, se pasan a grilla. */
+  const avail = Math.max(120, yEnd - yStart);
+  if (y - yStart + (cupones.length - 1) * step > avail) {
+    return cuponesGridSvg(cupones, yStart, avail, primary, accent);
+  }
   for (const c of cupones.slice(0, 24)) {
     lines.push(
       svgTextAsPath({
@@ -250,7 +316,14 @@ export function buildSorteoTicketSvg(input: SorteoTicketRenderInput): string {
           fill: accent,
           textAnchor: "middle",
         })}
-${cuponesAutoSvg(cupones, cupHeaderY + 40, primary, secondary)}`
+${cuponesAutoSvg(
+  cupones,
+  cupHeaderY + 40,
+  /** Última línea base permitida: por encima de la fecha (y del pie legal si hay). */
+  HA - PAD - (footer ? 56 : 28) - 56,
+  primary,
+  secondary
+)}`
       : "";
 
   // Línea decorativa bajo el título (separador visual)

@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
+import type { PhysicalCouponPrintRow } from "@/lib/sorteos/physical-coupons-print";
+import {
+  buildFormatCss,
+  buildThermalBody,
+} from "@/app/sorteos/[id]/imprimir-cupones/PhysicalCouponsPrintClient";
 
 type Envio = { estado: "idle" | "compartiendo" | "ok" | "error"; mensaje?: string };
 
@@ -14,6 +19,9 @@ type Props = {
   nombreCliente: string;
   cupones: string[];
   montoTotal: number;
+  /** Para el cupón físico (una página por número, formato ticketera 80mm). */
+  documentoCliente?: string;
+  sorteoNombre?: string;
 };
 
 /**
@@ -52,6 +60,8 @@ export default function TicketConfirmacionModal({
   nombreCliente,
   cupones,
   montoTotal,
+  documentoCliente = "",
+  sorteoNombre = "",
 }: Props) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
@@ -68,6 +78,41 @@ export default function TicketConfirmacionModal({
     [numeroOrden]
   );
   const [pdfBusy, setPdfBusy] = useState(false);
+
+  /** Fecha de la venta: se fija al abrir el modal (que se abre al confirmar la venta). */
+  const [fechaVenta, setFechaVenta] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    try {
+      setFechaVenta(
+        new Date().toLocaleString("es-PY", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      );
+    } catch {
+      setFechaVenta(new Date().toISOString().slice(0, 16));
+    }
+  }, [open]);
+
+  /** Un cupón físico por número, con los mismos campos que "Imprimir cupones". */
+  const cuponesFisicos = useMemo<PhysicalCouponPrintRow[]>(
+    () =>
+      cupones.map((c) => ({
+        cupon_id: c,
+        numero_cupon: c,
+        sorteo_nombre: sorteoNombre,
+        numero_orden: numeroOrden ?? 0,
+        nombre_participante: nombreCliente || null,
+        documento: documentoCliente || null,
+        whatsapp: telefonoCliente || null,
+        fecha_display: fechaVenta,
+      })),
+    [cupones, sorteoNombre, numeroOrden, nombreCliente, documentoCliente, telefonoCliente, fechaVenta]
+  );
 
   const mensaje = useMemo(() => {
     const totalGs = new Intl.NumberFormat("es-PY").format(Math.round(montoTotal || 0));
@@ -169,7 +214,58 @@ export default function TicketConfirmacionModal({
       const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
       const pdf = await PDFDocument.create();
 
-      if (signedUrl) {
+      if (cuponesFisicos.length > 0) {
+        /**
+         * Una página por cupón, formato ticketera 80mm (mismos datos que "Imprimir cupones"):
+         * sorteo, número grande, orden, nombre, documento, teléfono y fecha.
+         */
+        const font = await pdf.embedFont(StandardFonts.Helvetica);
+        const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+        const negro = rgb(0, 0, 0);
+        const W = 226.77; // 80mm
+        const H = 176;
+        /** Helvetica estándar solo codifica Latin-1: se quitan emojis u otros símbolos. */
+        const limpio = (s: string) => s.replace(/[^\x20-\x7E\xA0-\xFF]/g, "").trim();
+        for (const cup of cuponesFisicos) {
+          const page = pdf.addPage([W, H]);
+          page.drawRectangle({
+            x: 6,
+            y: 6,
+            width: W - 12,
+            height: H - 12,
+            borderColor: negro,
+            borderWidth: 1,
+            borderDashArray: [3, 3],
+          });
+          const centrado = (texto: string, y: number, size: number, f = font) => {
+            const t = limpio(texto);
+            if (!t) return;
+            let s = size;
+            while (s > 7 && f.widthOfTextAtSize(t, s) > W - 28) s -= 0.5;
+            page.drawText(t, { x: (W - f.widthOfTextAtSize(t, s)) / 2, y, size: s, font: f, color: negro });
+          };
+          let y = H - 28;
+          if (cup.sorteo_nombre) centrado(cup.sorteo_nombre.toUpperCase(), y, 11, bold);
+          y -= 32;
+          centrado(cup.numero_cupon, y, 28, bold);
+          y -= 18;
+          if (cup.numero_orden) centrado(`Orden ${cup.numero_orden}`, y, 12);
+          y -= 10;
+          page.drawLine({ start: { x: 16, y }, end: { x: W - 16, y }, thickness: 0.8, color: negro });
+          y -= 16;
+          centrado(cup.nombre_participante || "-", y, 12, bold);
+          if (cup.documento) {
+            y -= 15;
+            centrado(`Doc. ${cup.documento}`, y, 11);
+          }
+          if (cup.whatsapp) {
+            y -= 15;
+            centrado(`Tel. ${cup.whatsapp}`, y, 11);
+          }
+          y -= 15;
+          centrado(cup.fecha_display, y, 10);
+        }
+      } else if (signedUrl) {
         const res = await fetch(signedUrl, { cache: "no-store" });
         if (!res.ok) throw new Error("No se pudo leer la imagen del ticket");
         const bytes = await res.arrayBuffer();
@@ -220,6 +316,7 @@ export default function TicketConfirmacionModal({
     }
   }, [
     pdfBusy,
+    cuponesFisicos,
     signedUrl,
     numeroOrden,
     nombreCliente,
@@ -285,7 +382,16 @@ export default function TicketConfirmacionModal({
            <p class="total">Total: Gs. ${totalTxt}</p>
          </div>`;
 
-    const doc = `<!doctype html>
+    /**
+     * Con números: un cupón por página, formato ticketera 80mm con corte entre cupones.
+     * Es el mismo HTML/CSS de "Imprimir cupones" (buildThermalBody / buildFormatCss).
+     */
+    const docCupones = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Cupones orden ${numeroOrden ?? ""}</title>
+<style>${buildFormatCss("thermal_80", true)}</style>
+</head><body>${buildThermalBody(cuponesFisicos, true)}</body></html>`;
+
+    const docImagen = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Ticket ${numeroOrden ?? ""}</title>
 <style>
   @page { margin: 8mm; }
@@ -299,6 +405,7 @@ export default function TicketConfirmacionModal({
   .total { margin-top: 16px; font-size: 15px; font-weight: 700; }
 </style>
 </head><body>${cuerpo}</body></html>`;
+    const doc = cuponesFisicos.length > 0 ? docCupones : docImagen;
 
     const iframe = document.createElement("iframe");
     iframe.setAttribute("aria-hidden", "true");
@@ -330,7 +437,7 @@ export default function TicketConfirmacionModal({
     };
 
     document.body.appendChild(iframe);
-  }, [signedUrl, numeroOrden, nombreCliente, cupones, montoTotal]);
+  }, [signedUrl, numeroOrden, nombreCliente, cupones, montoTotal, cuponesFisicos]);
 
   if (!open) return null;
 

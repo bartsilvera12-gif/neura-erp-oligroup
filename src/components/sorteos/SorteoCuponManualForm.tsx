@@ -186,10 +186,18 @@ export default function SorteoCuponManualForm({
    * Snapshot del comprador tomado en el submit exitoso, ANTES de que el reset del
    * formulario pise nombre y teléfono, que son los que usa el envío por WhatsApp.
    */
-  const [okCliente, setOkCliente] = useState<{ nombre: string; telefono: string; monto: number }>({
+  const [okCliente, setOkCliente] = useState<{
+    nombre: string;
+    telefono: string;
+    monto: number;
+    documento: string;
+    sorteoNombre: string;
+  }>({
     nombre: "",
     telefono: "",
     monto: 0,
+    documento: "",
+    sorteoNombre: "",
   });
 
   const { promos, loadingPromos } = usePromosCuponManual(true);
@@ -354,6 +362,8 @@ export default function SorteoCuponManualForm({
         nombre: `${form.nombre.trim()} ${form.apellido.trim()}`.trim(),
         telefono: form.telefono.trim(),
         monto: Number.isFinite(monto) ? monto : 0,
+        documento: form.cedula.trim(),
+        sorteoNombre: sorteos.find((s) => s.id === sorteoId)?.nombre ?? "",
       });
       /**
        * El modal es el cierre de TODA venta, haya PNG o no: sin imagen igual muestra los
@@ -650,6 +660,8 @@ export default function SorteoCuponManualForm({
         nombreCliente={okCliente.nombre}
         cupones={okCupones}
         montoTotal={okCliente.monto}
+        documentoCliente={okCliente.documento}
+        sorteoNombre={okCliente.sorteoNombre}
       />
     </form>
   );
