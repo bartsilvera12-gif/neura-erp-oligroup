@@ -8,57 +8,51 @@
 -- `cupones-manuales`, así que quien ya tenía Sorteos sigue viendo la pantalla
 -- aunque no reciba filas nuevas.
 --
--- Se replica en todo schema que tenga catálogo `modulos` (public, zentra_erp,
--- triple7, erp_*, er_*).
+-- Acotada al schema de Triple 7. Esta base aloja un schema por cliente y catálogos
+-- compartidos en `public` / `zentra_erp`: dar de alta el módulo ahí se lo agregaría a
+-- clientes que no lo pidieron y que corren otro deploy.
+--
+-- Para otra instancia, cambiar `v_schema`.
 -- =============================================================================
 
 DO $$
 DECLARE
-  r RECORD;
+  v_schema text := 'triple7';
 BEGIN
-  FOR r IN
-    SELECT n.nspname AS sch
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE c.relname = 'modulos'
-      AND c.relkind = 'r'
-      AND (
-        n.nspname IN ('public', 'zentra_erp', 'triple7')
-        OR n.nspname ~ '^er_[0-9a-f]{32}$'
-        OR n.nspname LIKE 'erp\_%' ESCAPE '\'
+  IF to_regclass(format('%I.modulos', v_schema)) IS NULL THEN
+    RAISE EXCEPTION 'No existe %.modulos — revisá el nombre del schema.', v_schema;
+  END IF;
+
+  -- 1) Catálogo
+  EXECUTE format(
+    $sql$
+    INSERT INTO %I.modulos (id, nombre, slug)
+    SELECT gen_random_uuid(), 'Cupones manuales', 'cupones-manuales'
+    WHERE NOT EXISTS (SELECT 1 FROM %I.modulos WHERE slug = 'cupones-manuales')
+    $sql$,
+    v_schema, v_schema
+  );
+
+  IF to_regclass(format('%I.empresa_modulos', v_schema)) IS NULL THEN
+    RAISE NOTICE 'Sin %.empresa_modulos: el módulo queda solo en el catálogo.', v_schema;
+    RETURN;
+  END IF;
+
+  -- 2) Habilitado para toda empresa que ya tenga Sorteos activo (sin cambiar acceso efectivo)
+  EXECUTE format(
+    $sql$
+    INSERT INTO %I.empresa_modulos (empresa_id, modulo_id, activo)
+    SELECT em.empresa_id, nuevo.id, true
+    FROM %I.empresa_modulos em
+    JOIN %I.modulos sorteos ON sorteos.id = em.modulo_id AND sorteos.slug = 'sorteos'
+    CROSS JOIN %I.modulos nuevo
+    WHERE em.activo IS TRUE
+      AND nuevo.slug = 'cupones-manuales'
+      AND NOT EXISTS (
+        SELECT 1 FROM %I.empresa_modulos x
+        WHERE x.empresa_id = em.empresa_id AND x.modulo_id = nuevo.id
       )
-    ORDER BY 1
-  LOOP
-    -- 1) Catálogo
-    EXECUTE format(
-      $sql$
-      INSERT INTO %I.modulos (id, nombre, slug)
-      SELECT gen_random_uuid(), 'Cupones manuales', 'cupones-manuales'
-      WHERE NOT EXISTS (SELECT 1 FROM %I.modulos WHERE slug = 'cupones-manuales')
-      $sql$,
-      r.sch, r.sch
-    );
-
-    IF to_regclass(format('%I.empresa_modulos', r.sch)) IS NULL THEN
-      CONTINUE;
-    END IF;
-
-    -- 2) Habilitado para toda empresa que ya tenga Sorteos activo (sin cambiar acceso efectivo)
-    EXECUTE format(
-      $sql$
-      INSERT INTO %I.empresa_modulos (empresa_id, modulo_id, activo)
-      SELECT em.empresa_id, nuevo.id, true
-      FROM %I.empresa_modulos em
-      JOIN %I.modulos sorteos ON sorteos.id = em.modulo_id AND sorteos.slug = 'sorteos'
-      CROSS JOIN %I.modulos nuevo
-      WHERE em.activo IS TRUE
-        AND nuevo.slug = 'cupones-manuales'
-        AND NOT EXISTS (
-          SELECT 1 FROM %I.empresa_modulos x
-          WHERE x.empresa_id = em.empresa_id AND x.modulo_id = nuevo.id
-        )
-      $sql$,
-      r.sch, r.sch, r.sch, r.sch, r.sch
-    );
-  END LOOP;
+    $sql$,
+    v_schema, v_schema, v_schema, v_schema, v_schema
+  );
 END $$;
