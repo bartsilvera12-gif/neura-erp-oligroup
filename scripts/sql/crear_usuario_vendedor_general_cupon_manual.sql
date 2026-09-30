@@ -1,5 +1,5 @@
 -- =============================================================================
--- Alta de usuario acotado a "Cupones manuales" (módulo Sorteos)
+-- Alta de usuario acotado a "Cupones manuales" (módulo `cupones-manuales`)
 --   email: vendedorgeneral@triple7.com
 --   rol:   usuario  (NO admin/administrador: esos ven todos los módulos de la empresa)
 --
@@ -8,7 +8,7 @@
 --
 -- Paso previo: crear el usuario en Supabase Auth (Authentication → Users → Add user,
 -- con "Auto Confirm User") o vía API admin, y luego correr este script:
--- vincula por email con auth.users y deja usuario_modulos = {sorteos}.
+-- vincula por email con auth.users y deja usuario_modulos = {cupones-manuales}.
 -- =============================================================================
 
 DO $$
@@ -42,12 +42,13 @@ BEGIN
     RAISE EXCEPTION 'No hay empresas en el schema operativo.';
   END IF;
 
-  -- 3) Módulo Sorteos (slug con el que se gatea /sorteos/cupones-manuales)
-  SELECT id INTO v_modulo_id FROM modulos WHERE slug = 'sorteos' LIMIT 1;
+  -- 3) Módulo propio de Cupones manuales (slug con el que se gatea /sorteos/cupones-manuales).
+  --    Requiere la migración 20260930120000_modulo_cupones_manuales.sql.
+  SELECT id INTO v_modulo_id FROM modulos WHERE slug = 'cupones-manuales' LIMIT 1;
 
   IF v_modulo_id IS NULL THEN
     INSERT INTO modulos (id, nombre, slug)
-    VALUES (gen_random_uuid(), 'Sorteos', 'sorteos')
+    VALUES (gen_random_uuid(), 'Cupones manuales', 'cupones-manuales')
     RETURNING id INTO v_modulo_id;
   END IF;
 
@@ -78,14 +79,15 @@ BEGIN
      WHERE id = v_usuario_id;
   END IF;
 
-  -- 6) Permisos: SOLO el módulo sorteos (borra cualquier otro previo)
+  -- 6) Permisos: SOLO el módulo cupones-manuales (borra cualquier otro previo).
+  --    Ojo: NO otorgar `sorteos`, que por alias también habilita esta pantalla y todo el resto.
   DELETE FROM usuario_modulos WHERE usuario_id = v_usuario_id AND modulo_id <> v_modulo_id;
 
   INSERT INTO usuario_modulos (usuario_id, modulo_id)
   VALUES (v_usuario_id, v_modulo_id)
   ON CONFLICT (usuario_id, modulo_id) DO NOTHING;
 
-  RAISE NOTICE 'OK · usuario=% · empresa=% · modulos={sorteos}', v_usuario_id, v_empresa_id;
+  RAISE NOTICE 'OK · usuario=% · empresa=% · modulos={cupones-manuales}', v_usuario_id, v_empresa_id;
 END
 $$;
 

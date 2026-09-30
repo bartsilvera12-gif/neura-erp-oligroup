@@ -186,10 +186,10 @@ const MENU_STRUCTURE: MenuItem[] = [
       { label: "Tickets / Comprobantes", href: "/sorteos/tickets", exactMatch: true },
     ],
   },
-  /** Acceso directo al alta manual de cupones; mismo permiso que Sorteos (slug `sorteos`). */
+  /** Módulo propio: se puede otorgar sin dar acceso al resto de Sorteos (quien tenga `sorteos` lo ve igual, por alias). */
   {
     key: "cupones-manuales",
-    slug: "sorteos",
+    slug: "cupones-manuales",
     label: "Cupones manuales",
     href: "/sorteos/cupones-manuales",
     icon: TicketPlus,
