@@ -4082,6 +4082,11 @@ export function createFlowEngine(ctx: FlowEngineContext) {
     }
 
     let sorteoOrderMerge: Record<string, string> | undefined;
+    /** Orden creada al recibir el comprobante: si el siguiente nodo es el final, se envía el ticket. */
+    let imgTicketPackage: {
+      fin: EnsureSorteoOrderCreatedData;
+      flowData: Record<string, string>;
+    } | null = null;
 
     const sorteoImgGateOk =
       pipeline.kind === "resolved" &&
@@ -4369,6 +4374,7 @@ export function createFlowEngine(ctx: FlowEngineContext) {
       }
 
       sorteoOrderMerge = buildSorteoOrderFlowVarOverrides(finImg);
+      imgTicketPackage = { fin: finImg, flowData: hydFdImg };
       const ctxRowsImg = buildChatFlowDataUpsertsForSorteoOrder(
         state.empresa_id,
         state.id,
@@ -4497,12 +4503,85 @@ export function createFlowEngine(ctx: FlowEngineContext) {
       },
     });
 
+    /**
+     * Ticket PNG cuando la orden se creó con el comprobante y el siguiente nodo es el final
+     * (misma lógica que el camino del botón de confirmación). Sin orden o nodo no final: sin cambios.
+     */
+    let imgTicketMode: SorteoTicketDeliveryMode = "text_only";
+    let imgSuppressPlain = false;
+    let imgIsSorteoFinal = false;
+    const runImgTicket = async (phase: "before_final_text" | "after_final_text") => {
+      if (!imgTicketPackage) return;
+      console.info("[sorteo-ticket] final_node_delivery_start", {
+        conversationId: state.id,
+        phase,
+        mode: imgTicketMode,
+        trigger: "comprobante_imagen",
+      });
+      try {
+        const { delivery } = await runSorteoTicketAfterFinalNodeMessage({
+          supabase,
+          empresaId: state.empresa_id,
+          conversationId: state.id,
+          contactId: state.contact_id,
+          channelId: state.channel_id,
+          flowSessionId: imgFlowSid,
+          orderResult: imgTicketPackage.fin,
+          flowData: imgTicketPackage.flowData,
+        });
+        if (phase === "before_final_text") {
+          imgSuppressPlain = shouldSuppressSorteoFinalTextAfterImageOnlyTicket(delivery);
+        }
+        if (delivery && !delivery.ok && !delivery.skipped) {
+          console.error("[sorteo-ticket] final_node_delivery_error", {
+            conversationId: state.id,
+            reason: delivery.reason ?? "unknown",
+            trigger: "comprobante_imagen",
+          });
+        }
+      } catch (e) {
+        console.error("[sorteo-ticket] final_node_delivery_error", {
+          conversationId: state.id,
+          err: e instanceof Error ? e.message : String(e),
+          trigger: "comprobante_imagen",
+        });
+      }
+    };
+    if (imgTicketPackage) {
+      const nextNodeForImgTicket = await getNode(state.empresa_id, state.flow_code, nextImg);
+      imgIsSorteoFinal = isSorteoFinalTicketNode(nextImg, {
+        nodeMessageTemplate: nextNodeForImgTicket?.message_text ?? null,
+      });
+      if (imgIsSorteoFinal) {
+        imgTicketMode = await getSorteoTicketDeliveryModeForSorteo({
+          supabase,
+          empresaId: state.empresa_id,
+          sorteoId: imgTicketPackage.fin.sorteoId,
+        });
+      }
+      console.info("[sorteo-ticket] final_node_check", {
+        conversationId: state.id,
+        nextNodeCode: nextImg,
+        isSorteoFinal: imgIsSorteoFinal,
+        hasPackage: true,
+        mode: imgTicketMode,
+        trigger: "comprobante_imagen",
+      });
+      if (imgIsSorteoFinal && imgTicketMode === "image_only") {
+        await runImgTicket("before_final_text");
+      }
+    }
+
     const sent = await sendCurrentFlowNode({
       conversationId: state.id,
       mergeFlowVars: imgMergePreview,
+      ...(imgSuppressPlain ? { suppressPlainTextBody: true } : {}),
     });
     if (!sent.ok) {
       return { ok: false, status: "send_next_node_failed", error: sent.error };
+    }
+    if (imgTicketPackage && imgIsSorteoFinal && imgTicketMode === "text_and_image") {
+      await runImgTicket("after_final_text");
     }
     return { ok: true, status: "advanced", nextNodeCode: nextImg };
   }
