@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 
-type Envio = { estado: "idle" | "enviando" | "ok" | "error"; mensaje?: string };
+type Envio = { estado: "idle" | "compartiendo" | "ok" | "error"; mensaje?: string };
 
 type Props = {
   open: boolean;
@@ -17,8 +17,27 @@ type Props = {
 };
 
 /**
+ * Normaliza a dígitos E.164 sin `+`, que es lo que espera `wa.me`.
+ * Paraguay: `0981…` → `595981…`. Si ya viene con 595, se respeta.
+ */
+function normalizeWaDigits(raw: string): string {
+  let digits = String(raw ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("0")) digits = "595" + digits.slice(1);
+  else if (!digits.startsWith("595") && digits.length >= 7 && digits.length <= 10) {
+    digits = "595" + digits;
+  }
+  return digits;
+}
+
+/**
  * Modal post-venta manual: previsualiza el ticket PNG recién generado y ofrece
- * enviarlo por WhatsApp al número que se cargó en la compra, o imprimirlo.
+ * compartirlo por WhatsApp o imprimirlo.
+ *
+ * El envío sale del WhatsApp del propio vendedor, no del bot: se comparte el
+ * archivo PNG con la Web Share API (la imagen real, no un link) y, donde esa API
+ * no está disponible, se cae a `wa.me/<numero>` con el texto y la descarga del
+ * PNG para adjuntarlo a mano.
  */
 export default function TicketConfirmacionModal({
   open,
@@ -34,12 +53,39 @@ export default function TicketConfirmacionModal({
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [envio, setEnvio] = useState<Envio>({ estado: "idle" });
+  /**
+   * El PNG se descarga apenas hay signed URL, antes de que el usuario toque nada.
+   * `navigator.share()` tiene que salir dentro del gesto del click: si se hiciera
+   * el fetch ahí adentro, iOS descarta la llamada por haber perdido el gesto.
+   */
+  const [ticketFile, setTicketFile] = useState<File | null>(null);
+
+  const waDigits = useMemo(() => normalizeWaDigits(telefonoCliente), [telefonoCliente]);
+  const nombreArchivo = useMemo(
+    () => (numeroOrden ? `ticket-orden-${numeroOrden}.png` : "ticket.png"),
+    [numeroOrden]
+  );
+
+  const mensaje = useMemo(() => {
+    const totalGs = new Intl.NumberFormat("es-PY").format(Math.round(montoTotal || 0));
+    const cuponesTxt = cupones.length ? cupones.join(" · ") : "";
+    return [
+      `Hola${nombreCliente ? " " + nombreCliente : ""}!`,
+      "Tu compra quedó registrada.",
+      numeroOrden ? `Orden Nº ${numeroOrden}` : null,
+      cuponesTxt ? `Cupones: ${cuponesTxt}` : null,
+      `Total: Gs. ${totalGs}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }, [montoTotal, cupones, numeroOrden, nombreCliente]);
 
   useEffect(() => {
     if (!open) {
       setSignedUrl(null);
       setLoadErr(null);
       setEnvio({ estado: "idle" });
+      setTicketFile(null);
       return;
     }
     if (!deliveryId) return;
@@ -61,8 +107,19 @@ export default function TicketConfirmacionModal({
         const url = json.data?.url;
         if (!res.ok || !json.success || !url) {
           setLoadErr(json.error ?? "No se pudo cargar el ticket.");
-        } else {
-          setSignedUrl(url);
+          return;
+        }
+        setSignedUrl(url);
+
+        /** Precarga del archivo para compartir. Si falla, queda el fallback wa.me. */
+        try {
+          const img = await fetch(url, { cache: "no-store" });
+          if (!img.ok) return;
+          const blob = await img.blob();
+          if (cancelled) return;
+          setTicketFile(new File([blob], nombreArchivo, { type: blob.type || "image/png" }));
+        } catch {
+          /* sin archivo: el botón cae a wa.me + descarga */
         }
       } catch {
         if (!cancelled) setLoadErr("Error de red al cargar el ticket.");
@@ -73,7 +130,7 @@ export default function TicketConfirmacionModal({
     return () => {
       cancelled = true;
     };
-  }, [open, deliveryId]);
+  }, [open, deliveryId, nombreArchivo]);
 
   /** Escape cierra el modal, como cualquier diálogo del ERP. */
   useEffect(() => {
@@ -85,48 +142,73 @@ export default function TicketConfirmacionModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  const compartir = useCallback(async () => {
-    if (!deliveryId || !telefonoCliente || envio.estado === "enviando") return;
-    /**
-     * Manda la IMAGEN por el canal WhatsApp de la empresa, no un link: el endpoint
-     * valida el delivery, firma el PNG y lo pasa como media a Meta, así el cliente
-     * recibe la foto igual que cualquier ticket del bot.
-     */
-    const totalGs = new Intl.NumberFormat("es-PY").format(Math.round(montoTotal || 0));
-    const cuponesTxt = cupones.length ? cupones.join(" · ") : "";
-    const caption = [
-      `Hola${nombreCliente ? " " + nombreCliente : ""}!`,
-      "Tu compra quedó registrada.",
-      numeroOrden ? `Orden Nº ${numeroOrden}` : null,
-      cuponesTxt ? `Cupones: ${cuponesTxt}` : null,
-      `Total: Gs. ${totalGs}`,
-    ]
-      .filter(Boolean)
-      .join("\n");
+  /** Descarga el PNG para poder adjuntarlo a mano cuando no hay Web Share. */
+  const descargarTicket = useCallback(() => {
+    if (!signedUrl) return;
+    const dlUrl = `${signedUrl}${signedUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(
+      nombreArchivo
+    )}`;
+    const a = document.createElement("a");
+    a.href = dlUrl;
+    a.download = nombreArchivo;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [signedUrl, nombreArchivo]);
 
-    setEnvio({ estado: "enviando" });
-    try {
-      const res = await fetchWithSupabaseSession(
-        `/api/sorteos/tickets/${deliveryId}/send-to-phone`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ telefono: telefonoCliente, caption }),
+  const abrirWaMe = useCallback(() => {
+    const base = waDigits ? `https://wa.me/${waDigits}` : "https://wa.me/";
+    window.open(`${base}?text=${encodeURIComponent(mensaje)}`, "_blank", "noopener,noreferrer");
+  }, [waDigits, mensaje]);
+
+  const compartir = useCallback(async () => {
+    if (envio.estado === "compartiendo") return;
+
+    /**
+     * Camino principal: compartir el archivo. El selector del sistema abre WhatsApp
+     * con la imagen ya adjunta; el vendedor elige el chat del comprador.
+     */
+    const puedeCompartirArchivo =
+      !!ticketFile &&
+      typeof navigator !== "undefined" &&
+      typeof navigator.share === "function" &&
+      (navigator.canShare?.({ files: [ticketFile] }) ?? false);
+
+    if (puedeCompartirArchivo && ticketFile) {
+      setEnvio({ estado: "compartiendo" });
+      try {
+        await navigator.share({
+          files: [ticketFile],
+          text: mensaje,
+          title: numeroOrden ? `Ticket orden Nº ${numeroOrden}` : "Ticket",
+        });
+        setEnvio({ estado: "ok", mensaje: "Ticket compartido ✅" });
+      } catch (e) {
+        /** El usuario canceló el selector: no es un error que mostrar. */
+        if (e instanceof DOMException && e.name === "AbortError") {
+          setEnvio({ estado: "idle" });
+          return;
         }
-      );
-      const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
-      if (!res.ok || json.success === false) {
         setEnvio({
           estado: "error",
-          mensaje: json.error ?? `No se pudo enviar (HTTP ${res.status})`,
+          mensaje: "No se pudo compartir el archivo. Probá con “Descargar ticket”.",
         });
-        return;
       }
-      setEnvio({ estado: "ok", mensaje: "Ticket enviado por WhatsApp ✅" });
-    } catch (e) {
-      setEnvio({ estado: "error", mensaje: e instanceof Error ? e.message : "Error de red" });
+      return;
     }
-  }, [deliveryId, telefonoCliente, montoTotal, cupones, numeroOrden, nombreCliente, envio.estado]);
+
+    /**
+     * Fallback (escritorio, o navegador sin Web Share de archivos): se abre el chat
+     * de WhatsApp del comprador con el texto y se descarga el PNG para adjuntarlo.
+     */
+    abrirWaMe();
+    descargarTicket();
+    setEnvio({
+      estado: "ok",
+      mensaje: "Se abrió WhatsApp con el mensaje y se descargó el ticket: adjuntalo en el chat.",
+    });
+  }, [envio.estado, ticketFile, mensaje, numeroOrden, abrirWaMe, descargarTicket]);
 
   const imprimir = useCallback(() => {
     if (!signedUrl) return;
@@ -218,12 +300,20 @@ export default function TicketConfirmacionModal({
               {envio.mensaje}
             </div>
           ) : null}
-          {!telefonoCliente ? (
+          {!waDigits ? (
             <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              La compra no tiene teléfono cargado; solo se puede imprimir.
+              La compra no tiene teléfono cargado: al compartir vas a tener que elegir el contacto.
             </div>
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={descargarTicket}
+              disabled={!signedUrl}
+              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto"
+            >
+              ⬇ Descargar
+            </button>
             <button
               type="button"
               onClick={imprimir}
@@ -235,19 +325,10 @@ export default function TicketConfirmacionModal({
             <button
               type="button"
               onClick={() => void compartir()}
-              disabled={
-                !deliveryId ||
-                !telefonoCliente ||
-                envio.estado === "enviando" ||
-                envio.estado === "ok"
-              }
+              disabled={!signedUrl || envio.estado === "compartiendo"}
               className="w-full rounded-lg bg-[#25D366] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1FB955] disabled:opacity-50 sm:w-auto"
             >
-              {envio.estado === "enviando"
-                ? "Enviando…"
-                : envio.estado === "ok"
-                ? "✅ Enviado"
-                : "📲 Enviar por WhatsApp"}
+              {envio.estado === "compartiendo" ? "Compartiendo…" : "📲 Compartir por WhatsApp"}
             </button>
           </div>
         </div>
