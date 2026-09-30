@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { verifyTicketPublicToken } from "@/lib/sorteos/ticket-public-link";
+import { signedTicketImageUrl } from "@/lib/sorteos/ticket-public-image";
 
 export const dynamic = "force-dynamic";
 
@@ -23,8 +24,16 @@ export async function generateMetadata({
   params: Promise<{ token: string }>;
 }): Promise<Metadata> {
   const { token } = await params;
+  const deliveryId = verifyTicketPublicToken(token);
+
+  /**
+   * `og:image` apunta DIRECTO a Supabase Storage: el crawler de WhatsApp descarga el PNG
+   * de donde vive, sin pasar por Cloudflare ni por el server de la app. Si no se puede
+   * firmar, cae al proxy propio `/t/<token>/img`, que siempre está.
+   */
+  const directa = deliveryId ? await signedTicketImageUrl(deliveryId) : null;
   const origin = await currentOrigin();
-  const imgUrl = `${origin}/t/${token}/img`;
+  const imgUrl = directa ?? `${origin}/t/${token}/img`;
   return {
     title: "Tu ticket",
     description: "Ticket de tu compra",
@@ -59,10 +68,20 @@ export default async function TicketPublicoPage({
   params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
-  if (!verifyTicketPublicToken(token)) {
+  const deliveryId = verifyTicketPublicToken(token);
+  if (!deliveryId) {
     notFound();
   }
-  const imgSrc = `/t/${token}/img`;
+  /** Misma idea que en `og:image`: el navegador del comprador baja el PNG desde Storage. */
+  const directa = await signedTicketImageUrl(deliveryId);
+  const imgSrc = directa ?? `/t/${token}/img`;
+  /**
+   * `download` en un `<a>` se ignora cross-origin, así que para Storage se pide la descarga
+   * con su parámetro `download`, que responde con Content-Disposition: attachment.
+   */
+  const descargaSrc = directa
+    ? `${directa}${directa.includes("?") ? "&" : "?"}download=ticket.png`
+    : imgSrc;
 
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-slate-100 p-4">
@@ -74,7 +93,7 @@ export default async function TicketPublicoPage({
         className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-sm"
       />
       <a
-        href={imgSrc}
+        href={descargaSrc}
         download="ticket.png"
         className="rounded-lg bg-[#4FAEB2] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#3F8E91]"
       >
