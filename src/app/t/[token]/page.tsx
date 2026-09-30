@@ -28,7 +28,12 @@ export async function generateMetadata({
   return {
     title: "Tu ticket",
     description: "Ticket de tu compra",
-    robots: { index: false, follow: false },
+    /**
+     * `noindex` general no: `facebookexternalhit` lo respeta y deja de armar el preview,
+     * que es justamente para lo que existe esta página. Se lo decimos solo a Google, y el
+     * resto de los buscadores queda cubierto por el Disallow de /robots.txt.
+     */
+    robots: { googleBot: { index: false, follow: false } },
     openGraph: {
       title: "Tu ticket",
       description: "Ticket de tu compra",
