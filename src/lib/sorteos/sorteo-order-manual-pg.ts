@@ -213,7 +213,14 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
     }
     if (String(s.estado) !== "activo") {
       await client.query("ROLLBACK");
-      return { ok: false, message: "El sorteo no está activo." };
+      /**
+       * Con el estado y el schema en el mensaje: si la lista ofreció el sorteo y la venta lo
+       * rechaza, el dato que falta es cuál de los dos está mirando otra cosa.
+       */
+      return {
+        ok: false,
+        message: `El sorteo no está activo (estado: ${String(s.estado)}, schema: ${sch}).`,
+      };
     }
     if (s.total_boletos_vendidos + qty > s.max_boletos) {
       await client.query("ROLLBACK");
