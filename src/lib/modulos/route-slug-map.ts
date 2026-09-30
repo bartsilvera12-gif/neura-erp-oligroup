@@ -26,6 +26,7 @@ const SIDEBAR_SLUG_HREF_ORDER: { slug: string; href: string }[] = [
   { slug: "marketing", href: "/marketing" },
   { slug: "marketing_ops", href: "/dashboard/marketing-ops" },
   { slug: "sorteos", href: "/sorteos" },
+  { slug: "cupones-manuales", href: "/sorteos/cupones-manuales" },
   { slug: "campanas", href: "/dashboard/campanas" },
   { slug: "proyectos", href: "/dashboard/proyectos" },
   { slug: "etiquetas", href: "/dashboard/etiquetas" },
@@ -56,6 +57,8 @@ export function isModuleSlugGranted(routeSlug: string, grantedSlugs: Set<string>
     return true;
   }
   if (routeSlug === "gestion-clientes" && grantedSlugs.has("clientes")) return true;
+  // Cupones manuales nació dentro de Sorteos: quien tiene el módulo completo lo sigue viendo.
+  if (routeSlug === "cupones-manuales" && grantedSlugs.has("sorteos")) return true;
   if (routeSlug === "notas_credito" && grantedSlugs.has("ventas")) return true;
   return false;
 }
@@ -120,6 +123,7 @@ export function pathRequiresModuleSlug(pathname: string): string | null {
   if (p.startsWith("/gestion-clientes")) return "gestion-clientes";
   if (p.startsWith("/crm")) return "crm";
   if (p.startsWith("/marketing")) return "marketing";
+  if (p.startsWith("/sorteos/cupones-manuales")) return "cupones-manuales";
   if (p.startsWith("/sorteos")) return "sorteos";
   return null;
 }
