@@ -63,12 +63,6 @@ export type BotClassificationExplanation = {
   };
 };
 
-/** Estados que cuentan como sesión “en ejecución” para la pestaña Bot (además de `active`). */
-const SESSION_STATUS_BOT_ACTIVE = new Set(["active", "running"]);
-
-/** `flow_status` en conversación que indica automatización cuando no hay puntero/sesión resuelta. */
-const FLOW_STATUS_BOTISH = new Set(["bot", "active", "running"]);
-
 export function buildActiveFlowMatchSet(
   rows: { id?: string | null; flow_code?: string | null }[] | null | undefined
 ): Set<string> {
@@ -93,17 +87,6 @@ export function flowTokenMatchesActiveCatalog(token: string | null | undefined, 
   if (!t) return false;
   if (matchSet.has(t)) return true;
   return matchSet.has(t.toLowerCase());
-}
-
-function normalizeSessionStatus(s: string): string {
-  return String(s ?? "")
-    .trim()
-    .toLowerCase();
-}
-
-function isSessionStatusBotActive(statusRaw: string): boolean {
-  const s = normalizeSessionStatus(statusRaw);
-  return SESSION_STATUS_BOT_ACTIVE.has(s);
 }
 
 /**
@@ -192,69 +175,28 @@ function evaluateBotConversation(
     return { isBot: false, reason: "missing_conversation_id", resolvedSessionId: null, flags: baseFlags };
   }
 
+  /**
+   * Regla del negocio (2026-09-30): por defecto la conversación es del **Bot**. Solo va al
+   * **Inbox** cuando interviene un humano (ya filtrado arriba: `human_taken_over` /
+   * `flow_status='human'`). No se exige sesión de flujo ni flow_code activo: una
+   * plantilla/masivo sin respuesta —o un flujo ya terminado— sigue siendo del bot y no
+   * ensucia el inbox humano. Paridad exacta con `buildBotTabSqlPredicate`.
+   */
   const { session, resolutionPath } = resolveFlowSessionForClassification(conv, ctx);
-
-  if (!session) {
-    if (FLOW_STATUS_BOTISH.has(flowStatus) && hasChannelFlow) {
-      return {
-        isBot: true,
-        reason: "ok_bot_tab_flow_status_channel_no_resolved_session",
-        resolvedSessionId: null,
-        flags: emptyFlags({
-          ...baseFlags,
-          hasActiveSessionInTable: activeSessionInMap(conv, ctx),
-          resolutionPath,
-        }),
-      };
-    }
-    return {
-      isBot: false,
-      reason: pointerId ? "active_flow_session_row_missing_or_mismatch" : "no_active_flow_session_for_conversation",
-      resolvedSessionId: null,
-      flags: emptyFlags({
-        ...baseFlags,
-        hasActiveSessionInTable: activeSessionInMap(conv, ctx),
-        resolutionPath,
-      }),
-    };
-  }
-
-  const sessStatus = String(session.status ?? "").trim();
-  const sessConv = String(session.conversation_id ?? "").trim();
-  const sessionMatchesConversation = sessConv === conversationId;
-
-  const sessFlow = String(session.flow_code ?? "").trim();
-  const runningFlow = sessFlow || convFlow;
-  const catalogOk = Boolean(runningFlow && flowTokenMatchesActiveCatalog(runningFlow, ctx.activeFlowCodeSet));
-
-  const flags = emptyFlags({
-    ...baseFlags,
-    hasActiveSessionInTable: true,
-    sessionMatchesConversation,
-    sessionStatus: sessStatus,
-    resolutionPath,
-    runningFlowInCatalog: catalogOk,
-  });
-
-  if (!sessionMatchesConversation) {
-    return { isBot: false, reason: "session_conversation_id_mismatch", resolvedSessionId: session.id, flags };
-  }
-
-  if (!isSessionStatusBotActive(sessStatus)) {
-    return {
-      isBot: false,
-      reason: `session_status_not_bot_active:${normalizeSessionStatus(sessStatus) || "empty"}`,
-      resolvedSessionId: session.id,
-      flags,
-    };
-  }
-
-  /** Sesión active/running en esta conversación: Bot aunque el token no coincida con catálogo (FK/eventos/flows editados). */
+  const sessionMatchesConversation = session
+    ? String(session.conversation_id ?? "").trim() === conversationId
+    : false;
   return {
     isBot: true,
-    reason: catalogOk ? "ok_bot_tab" : "ok_bot_tab_active_session",
-    resolvedSessionId: session.id,
-    flags,
+    reason: session && sessionMatchesConversation ? "ok_bot_default_with_session" : "ok_bot_default_no_human",
+    resolvedSessionId: session && sessionMatchesConversation ? session.id : null,
+    flags: emptyFlags({
+      ...baseFlags,
+      hasActiveSessionInTable: activeSessionInMap(conv, ctx),
+      sessionMatchesConversation,
+      sessionStatus: session ? String(session.status ?? "").trim() : null,
+      resolutionPath,
+    }),
   };
 }
 

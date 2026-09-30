@@ -21,48 +21,23 @@ import { quoteSchemaTable } from "@/lib/supabase/chat-pg-pool";
  */
 export function buildBotTabSqlPredicate(schema: string): string {
   const conv = "chat_conversations"; // correlación al outer (FROM sin alias)
-  const sess = quoteSchemaTable(schema, "chat_flow_sessions");
   const flows = quoteSchemaTable(schema, "chat_flows");
 
+  /**
+   * Regla del negocio (2026-09-30): una conversación abierta/pendiente es del **Bot**
+   * POR DEFECTO. Solo va al **Inbox** cuando interviene un humano
+   * (`human_taken_over = true` o `flow_status = 'human'`). Ya no se exige sesión de
+   * flujo ni flow_code activo: una plantilla/masivo sin respuesta —o un flujo ya
+   * terminado— sigue siendo del bot y no ensucia el inbox humano.
+   *
+   * Verificado en datos: el handoff a humano SIEMPRE marca human_taken_over/flow_status
+   * (0 conversaciones asignadas a agente/cola sin esa marca), así que este predicado no
+   * manda ninguna conversación humana al bot.
+   */
   return `(
     COALESCE(${conv}.human_taken_over, false) = false
     AND lower(coalesce(${conv}.flow_status, '')) <> 'human'
     AND EXISTS (SELECT 1 FROM ${flows} f WHERE f.empresa_id = $1::uuid AND f.activo = true)
-    AND CASE
-      -- (1) puntero resuelve a una sesión de ESTA conversación (cualquier status)
-      WHEN ${conv}.active_flow_session_id IS NOT NULL
-           AND EXISTS (
-             SELECT 1 FROM ${sess} sp
-              WHERE sp.empresa_id = $1::uuid
-                AND sp.id = ${conv}.active_flow_session_id
-                AND sp.conversation_id = ${conv}.id
-           )
-      THEN EXISTS (
-             SELECT 1 FROM ${sess} sp
-              WHERE sp.empresa_id = $1::uuid
-                AND sp.id = ${conv}.active_flow_session_id
-                AND sp.conversation_id = ${conv}.id
-                AND lower(trim(sp.status)) IN ('active','running')
-           )
-      -- (2) sin puntero válido: ¿hay sesión active/running para la conv?
-      WHEN EXISTS (
-             SELECT 1 FROM ${sess} sc
-              WHERE sc.empresa_id = $1::uuid
-                AND sc.conversation_id = ${conv}.id
-                AND lower(trim(sc.status)) IN ('active','running')
-           )
-      THEN true
-      -- (3) sin sesión: flow_status "botish" + flow_code en catálogo activo
-      ELSE (
-        lower(coalesce(${conv}.flow_status, '')) IN ('bot','active','running')
-        AND lower(trim(coalesce(${conv}.flow_code, ''))) <> ''
-        AND lower(trim(coalesce(${conv}.flow_code, ''))) IN (
-          SELECT lower(trim(flow_code)) FROM ${flows} WHERE empresa_id = $1::uuid AND activo = true
-          UNION
-          SELECT lower(id::text)        FROM ${flows} WHERE empresa_id = $1::uuid AND activo = true
-        )
-      )
-    END
   )`;
 }
 
