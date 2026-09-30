@@ -34,13 +34,14 @@ function normalizeWaDigits(raw: string): string {
  * Modal post-venta manual: previsualiza el ticket PNG recién generado y ofrece
  * compartirlo por WhatsApp o imprimirlo.
  *
- * El envío sale del WhatsApp del propio vendedor, no del bot: la imagen va como
- * archivo por la Web Share API (el PNG real, no un link) y el chat del comprador
- * se abre con `wa.me/<numero>` usando el teléfono cargado en la compra.
+ * El envío sale del WhatsApp del propio vendedor, no del bot: se descarga el PNG y se
+ * abre `wa.me/<numero>` con el teléfono cargado en la compra y el mensaje armado; el
+ * operador adjunta la imagen desde la galería.
  *
- * WhatsApp no permite adjuntar un archivo desde un link `wa.me`: o se comparte el
- * archivo (y el vendedor elige el contacto en el selector del sistema), o se abre
- * el chat exacto con solo texto. Por eso son dos acciones y no una.
+ * Es el camino largo a propósito. WhatsApp no deja adjuntar un archivo desde un link
+ * `wa.me`, y las alternativas fallan de maneras distintas según el teléfono: Web Share
+ * no permite preseleccionar el contacto, y mandar el link del ticket depende de que el
+ * crawler de Meta pueda leer la página para armar el preview. Esto funciona siempre.
  */
 export default function TicketConfirmacionModal({
   open,
@@ -56,18 +57,6 @@ export default function TicketConfirmacionModal({
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [envio, setEnvio] = useState<Envio>({ estado: "idle" });
-  /**
-   * El PNG se descarga apenas hay signed URL, antes de que el usuario toque nada.
-   * `navigator.share()` tiene que salir dentro del gesto del click: si se hiciera
-   * el fetch ahí adentro, iOS descarta la llamada por haber perdido el gesto.
-   */
-  const [ticketFile, setTicketFile] = useState<File | null>(null);
-  /**
-   * Link corto público (`/t/<token>`) del ticket. Va en el texto de WhatsApp para que el
-   * chat muestre el preview con la imagen: la signed URL de Storage ronda los 500 caracteres
-   * y WhatsApp no le arma preview.
-   */
-  const [publicUrl, setPublicUrl] = useState<string | null>(null);
 
   const waDigits = useMemo(() => normalizeWaDigits(telefonoCliente), [telefonoCliente]);
   const nombreArchivo = useMemo(
@@ -84,20 +73,16 @@ export default function TicketConfirmacionModal({
       numeroOrden ? `Orden Nº ${numeroOrden}` : null,
       cuponesTxt ? `Cupones: ${cuponesTxt}` : null,
       `Total: Gs. ${totalGs}`,
-      /** Última línea y sola: así WhatsApp la toma como link del mensaje y muestra el ticket. */
-      publicUrl ? `\nTu ticket: ${publicUrl}` : null,
     ]
       .filter(Boolean)
       .join("\n");
-  }, [montoTotal, cupones, numeroOrden, nombreCliente, publicUrl]);
+  }, [montoTotal, cupones, numeroOrden, nombreCliente]);
 
   useEffect(() => {
     if (!open) {
       setSignedUrl(null);
       setLoadErr(null);
       setEnvio({ estado: "idle" });
-      setTicketFile(null);
-      setPublicUrl(null);
       return;
     }
     if (!deliveryId) return;
@@ -112,7 +97,7 @@ export default function TicketConfirmacionModal({
         );
         const json = (await res.json()) as {
           success?: boolean;
-          data?: { url?: string; public_url?: string | null };
+          data?: { url?: string };
           error?: string;
         };
         if (cancelled) return;
@@ -122,18 +107,6 @@ export default function TicketConfirmacionModal({
           return;
         }
         setSignedUrl(url);
-        setPublicUrl(json.data?.public_url?.trim() || null);
-
-        /** Precarga del archivo para compartir. Si falla, queda el fallback wa.me. */
-        try {
-          const img = await fetch(url, { cache: "no-store" });
-          if (!img.ok) return;
-          const blob = await img.blob();
-          if (cancelled) return;
-          setTicketFile(new File([blob], nombreArchivo, { type: blob.type || "image/png" }));
-        } catch {
-          /* sin archivo: el botón cae a wa.me + descarga */
-        }
       } catch {
         if (!cancelled) setLoadErr("Error de red al cargar el ticket.");
       } finally {
@@ -143,7 +116,7 @@ export default function TicketConfirmacionModal({
     return () => {
       cancelled = true;
     };
-  }, [open, deliveryId, nombreArchivo]);
+  }, [open, deliveryId]);
 
   /** Escape cierra el modal, como cualquier diálogo del ERP. */
   useEffect(() => {
@@ -175,70 +148,29 @@ export default function TicketConfirmacionModal({
     window.open(`${base}?text=${encodeURIComponent(mensaje)}`, "_blank", "noopener,noreferrer");
   }, [waDigits, mensaje]);
 
-  const compartir = useCallback(async () => {
+  /**
+   * Flujo de envío, deliberadamente simple porque es el único que funciona igual en todos
+   * los teléfonos: descarga el PNG y abre el chat del comprador con el mensaje armado.
+   * El operador adjunta desde la galería.
+   *
+   * No usa Web Share (no deja preseleccionar el contacto) ni manda el link del ticket en el
+   * texto (depende de que el crawler de WhatsApp pueda leer la página para armar el preview).
+   */
+  const enviarPorWhatsApp = useCallback(() => {
     if (envio.estado === "compartiendo") return;
+    setEnvio({ estado: "compartiendo" });
 
-    /**
-     * Camino principal: compartir el archivo. El selector del sistema abre WhatsApp
-     * con la imagen ya adjunta; el vendedor elige el chat del comprador.
-     */
-    const puedeCompartirArchivo =
-      !!ticketFile &&
-      typeof navigator !== "undefined" &&
-      typeof navigator.share === "function" &&
-      (navigator.canShare?.({ files: [ticketFile] }) ?? false);
-
-    if (puedeCompartirArchivo && ticketFile) {
-      setEnvio({ estado: "compartiendo" });
-      try {
-        await navigator.share({
-          files: [ticketFile],
-          text: mensaje,
-          title: numeroOrden ? `Ticket orden Nº ${numeroOrden}` : "Ticket",
-        });
-        setEnvio({
-          estado: "ok",
-          mensaje: waDigits
-            ? `Ticket compartido ✅ — si hace falta, abrí el chat de ${telefonoCliente}.`
-            : "Ticket compartido ✅",
-        });
-      } catch (e) {
-        /** El usuario canceló el selector: no es un error que mostrar. */
-        if (e instanceof DOMException && e.name === "AbortError") {
-          setEnvio({ estado: "idle" });
-          return;
-        }
-        setEnvio({
-          estado: "error",
-          mensaje: "No se pudo compartir el archivo. Probá con “Descargar ticket”.",
-        });
-      }
-      return;
-    }
-
-    /**
-     * Sin Web Share de archivos (escritorio, Firefox): se abre el chat del comprador
-     * con el texto y se descarga el PNG para adjuntarlo a mano.
-     */
-    abrirWaMe();
+    /** Primero la descarga: si se abre wa.me antes, el navegador manda esta pestaña al fondo. */
     if (signedUrl) descargarTicket();
+    abrirWaMe();
+
     setEnvio({
       estado: "ok",
       mensaje: signedUrl
-        ? `Se abrió el chat de ${telefonoCliente || "WhatsApp"} y se descargó el ticket: adjuntalo en el chat.`
-        : `Se abrió el chat de ${telefonoCliente || "WhatsApp"} con el mensaje y los números.`,
+        ? "Ticket descargado y chat abierto. Adjuntalo con 📎 → Galería."
+        : `Chat de ${telefonoCliente || "WhatsApp"} abierto con el mensaje y los números.`,
     });
-  }, [
-    envio.estado,
-    ticketFile,
-    mensaje,
-    numeroOrden,
-    abrirWaMe,
-    descargarTicket,
-    telefonoCliente,
-    waDigits,
-    signedUrl,
-  ]);
+  }, [envio.estado, signedUrl, descargarTicket, abrirWaMe, telefonoCliente]);
 
   const imprimir = useCallback(() => {
     /**
@@ -367,14 +299,13 @@ export default function TicketConfirmacionModal({
           ) : null}
           {!waDigits ? (
             <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              La compra no tiene teléfono cargado: no se puede abrir el chat directo, solo compartir
-              eligiendo el contacto.
+              La compra no tiene teléfono cargado: WhatsApp va a abrir sin el chat elegido y vas
+              a tener que buscar el contacto.
             </div>
           ) : null}
           <p className="mb-2 text-[11px] leading-snug text-slate-500">
-            “Enviar ticket” comparte la imagen y elegís el contacto; “Abrir chat” va directo al
-            número de la compra, con el texto y el link del ticket, que WhatsApp muestra como
-            preview con la imagen.
+            “Enviar por WhatsApp” descarga el ticket y abre el chat del número de la compra con
+            el mensaje listo. Adjuntá la imagen con 📎 → Galería.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
             {signedUrl ? (
@@ -389,25 +320,17 @@ export default function TicketConfirmacionModal({
             <button
               type="button"
               onClick={imprimir}
-              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto"
+              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:w-auto"
             >
               🖨 Imprimir
             </button>
             <button
               type="button"
-              onClick={abrirWaMe}
-              disabled={!waDigits}
-              className="w-full rounded-lg border border-[#25D366] bg-white px-4 py-2.5 text-sm font-semibold text-[#128C7E] hover:bg-[#25D366]/10 disabled:opacity-50 sm:w-auto"
-            >
-              💬 Abrir chat {telefonoCliente ? `de ${telefonoCliente}` : ""}
-            </button>
-            <button
-              type="button"
-              onClick={() => void compartir()}
+              onClick={enviarPorWhatsApp}
               disabled={envio.estado === "compartiendo"}
               className="w-full rounded-lg bg-[#25D366] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1FB955] disabled:opacity-50 sm:w-auto"
             >
-              {envio.estado === "compartiendo" ? "Compartiendo…" : "📲 Enviar ticket"}
+              {envio.estado === "compartiendo" ? "Abriendo…" : "📲 Enviar por WhatsApp"}
             </button>
           </div>
         </div>
