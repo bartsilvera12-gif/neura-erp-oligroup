@@ -72,8 +72,12 @@ export function useSorteosCuponManual(enabled: boolean) {
         const fallback = await pedir("/api/sorteos");
         if (cancelled) return;
         if ("lista" in fallback) {
-          const activos = fallback.lista.filter((s) => (s.estado ?? "activo") === "activo");
-          setSorteos(activos.length > 0 ? activos : fallback.lista);
+          /**
+           * Solo activos, sin caer a "todos" si no hay ninguno: la transacción de venta
+           * manual hace ROLLBACK con "El sorteo no está activo", así que ofrecer un sorteo
+           * finalizado termina en una venta que falla recién al guardar.
+           */
+          setSorteos(fallback.lista.filter((s) => (s.estado ?? "activo") === "activo"));
           return;
         }
         setLoadErr(`No se pudieron cargar los sorteos: ${principal.error}`);

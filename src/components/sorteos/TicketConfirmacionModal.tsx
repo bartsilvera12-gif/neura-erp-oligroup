@@ -174,19 +174,18 @@ export default function TicketConfirmacionModal({
 
   const imprimir = useCallback(() => {
     /**
-     * Ventana nueva con SOLO el comprobante: dispara print() al cargar y se cierra al
-     * terminar, así no sale impreso el resto del ERP.
+     * Imprime con un iframe oculto, no con `window.open`: en el celular el popup lo bloquea
+     * el navegador la mitad de las veces, y ahí el botón no hacía nada. Con el iframe el
+     * diálogo nativo abre siempre, y desde ahí el operador elige su impresora o
+     * "Guardar como PDF" — que es como se manda a una impresora por el sistema.
      *
      * Con PNG se imprime la imagen; sin PNG (sorteo en modo solo texto, o generación
-     * fallida) se imprime igual un comprobante con orden, cupones y total, que es lo
-     * que el cliente se lleva del mostrador.
+     * fallida) se imprime un comprobante con orden, números y total, que es lo que el
+     * cliente se lleva del mostrador.
      */
-    const win = window.open("", "_blank", "noopener,noreferrer,width=600,height=800");
-    if (!win) return;
-
-    const titulo = `Ticket ${numeroOrden ?? ""}`;
+    const totalTxt = new Intl.NumberFormat("es-PY").format(Math.round(montoTotal || 0));
     const cuerpo = signedUrl
-      ? `<img src="${signedUrl}" alt="Ticket" onload="setTimeout(function(){ window.print(); }, 250);" />`
+      ? `<img src="${signedUrl}" alt="Ticket" />`
       : `<div class="tk">
            <h1>Comprobante de compra</h1>
            ${numeroOrden ? `<p class="orden">Orden Nº ${numeroOrden}</p>` : ""}
@@ -197,32 +196,54 @@ export default function TicketConfirmacionModal({
                   <p class="nums">${cupones.join(" · ")}</p>`
                : ""
            }
-           <p class="total">Total: Gs. ${new Intl.NumberFormat("es-PY").format(
-             Math.round(montoTotal || 0)
-           )}</p>
-         </div>
-         <script>setTimeout(function(){ window.print(); }, 150);<\/script>`;
+           <p class="total">Total: Gs. ${totalTxt}</p>
+         </div>`;
 
-    win.document.write(`<!doctype html>
-<html><head><meta charset="utf-8"><title>${titulo}</title>
+    const doc = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Ticket ${numeroOrden ?? ""}</title>
 <style>
-  @page { margin: 0; }
+  @page { margin: 8mm; }
   html, body { margin: 0; padding: 0; background: #fff; font-family: system-ui, sans-serif; }
   img { display: block; max-width: 100%; margin: 0 auto; }
-  .tk { padding: 24px; text-align: center; color: #0f172a; }
+  .tk { padding: 16px; text-align: center; color: #0f172a; }
   .tk h1 { font-size: 16px; margin: 0 0 12px; }
   .orden { font-size: 14px; margin: 0 0 4px; }
   .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 16px 0 4px; }
   .nums { font-family: ui-monospace, monospace; font-size: 18px; font-weight: 700; margin: 0; }
   .total { margin-top: 16px; font-size: 15px; font-weight: 700; }
 </style>
-</head><body>
-  ${cuerpo}
-  <script>
-    window.onafterprint = function() { window.close(); };
-  <\/script>
-</body></html>`);
-    win.document.close();
+</head><body>${cuerpo}</body></html>`;
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.srcdoc = doc;
+
+    iframe.onload = () => {
+      const win = iframe.contentWindow;
+      if (!win) return;
+      const lanzar = () => {
+        win.focus();
+        win.print();
+        /** Se quita después del diálogo; si se saca antes, algunos navegadores cancelan. */
+        window.setTimeout(() => iframe.remove(), 60_000);
+      };
+      const img = iframe.contentDocument?.images?.[0];
+      /** Con imagen hay que esperar a que cargue, o se imprime la hoja en blanco. */
+      if (img && !img.complete) {
+        img.onload = lanzar;
+        img.onerror = lanzar;
+      } else {
+        lanzar();
+      }
+    };
+
+    document.body.appendChild(iframe);
   }, [signedUrl, numeroOrden, nombreCliente, cupones, montoTotal]);
 
   if (!open) return null;
@@ -305,7 +326,8 @@ export default function TicketConfirmacionModal({
           ) : null}
           <p className="mb-2 text-[11px] leading-snug text-slate-500">
             “Enviar por WhatsApp” descarga el ticket y abre el chat del número de la compra con
-            el mensaje listo. Adjuntá la imagen con 📎 → Galería.
+            el mensaje listo: adjuntá la imagen con 📎 → Galería. “Imprimir / PDF” abre el
+            diálogo del sistema, donde elegís tu impresora o “Guardar como PDF”.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
             {signedUrl ? (
@@ -322,7 +344,7 @@ export default function TicketConfirmacionModal({
               onClick={imprimir}
               className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:w-auto"
             >
-              🖨 Imprimir
+              🖨 Imprimir / PDF
             </button>
             <button
               type="button"
