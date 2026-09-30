@@ -16,10 +16,10 @@ import { BootProvider, useBoot } from "@/components/BootContext";
 const PUBLIC_ROUTES = ["/login"];
 
 /**
- * Prefijos públicos (sin sesión). `/r/` = links de referido y reportes públicos
- * de revendedores (protegidos por token firmado, no por sesión).
+ * Prefijos públicos (sin sesión). `/r/` = links de referido y reportes públicos de
+ * revendedores; `/t/` = ticket del comprador. Ambos protegidos por token firmado.
  */
-const PUBLIC_PREFIXES = ["/r/"];
+const PUBLIC_PREFIXES = ["/r/", "/t/"];
 
 type ModuleAccess = { superAdmin: boolean; slugs: Set<string> };
 

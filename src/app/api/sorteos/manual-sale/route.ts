@@ -37,6 +37,8 @@ export type ManualSaleBody = {
   idempotency_key?: string;
   /** Opcional: código verificador (4 dígitos) del revendedor al que se atribuye la venta. */
   codigo_verificador?: string | null;
+  /** Opcional: nombre de la promo del bot con la que se cobró (queda en sorteo_entradas.promo_nombre). */
+  promo_nombre?: string | null;
 };
 
 /**
@@ -71,6 +73,8 @@ export async function POST(request: NextRequest) {
       typeof body.generar_ticket_png === "boolean" ? body.generar_ticket_png : true;
     const codigoVerificador =
       typeof body.codigo_verificador === "string" ? body.codigo_verificador.trim() : "";
+    const promoNombre =
+      typeof body.promo_nombre === "string" ? body.promo_nombre.trim().slice(0, 120) : "";
     if (codigoVerificador && !isCodigoVerificadorValido(codigoVerificador)) {
       return NextResponse.json(errorResponse(CODIGO_VERIFICADOR_ERROR), { status: 400 });
     }
@@ -117,6 +121,7 @@ export async function POST(request: NextRequest) {
       observacionInterna: observacion.length > 0 ? observacion : null,
       validadoPorUserId: ctx.auth.usuarioCatalogId ?? null,
       codigoVerificador: codigoVerificador || null,
+      promoNombre: promoNombre || null,
     });
 
     if (!created.ok) {

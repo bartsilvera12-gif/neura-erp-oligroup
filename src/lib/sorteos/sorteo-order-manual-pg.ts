@@ -48,6 +48,8 @@ export type SorteoManualCashInput = {
   validadoPorUserId?: string | null;
   /** Código verificador (4 dígitos) del revendedor: atribuye la venta (revendedor_id). Opcional. */
   codigoVerificador?: string | null;
+  /** Nombre de la promo elegida (mismo botón que ofrece el bot), para trazar el precio cobrado. */
+  promoNombre?: string | null;
 };
 
 export type SorteoManualCashFail = { ok: false; message: string };
@@ -313,7 +315,7 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
       chat_conversation_id: null,
       flow_code: null,
       idempotency_key: idem,
-      promo_nombre: null,
+      promo_nombre: (input.promoNombre ?? "").trim() || null,
       precio_fuente: precioFuenteIns,
       precio_regular_referencia: precioRegularRef,
     };

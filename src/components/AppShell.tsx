@@ -12,7 +12,7 @@ const STANDALONE_ROUTES = ["/login"];
  * pantalla completa. `/r/` = páginas públicas (referidos + reportes de
  * revendedores) que abren clientes/vendedores sin sesión.
  */
-const STANDALONE_PREFIXES = ["/r/"];
+const STANDALONE_PREFIXES = ["/r/", "/t/"];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();

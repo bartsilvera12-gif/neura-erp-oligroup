@@ -4,6 +4,7 @@ import { getTenantSupabaseFromAuth } from "@/lib/supabase/tenant-api";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { API_ERRORS } from "@/lib/api/errors";
 import { createSignedUrlForTicket } from "@/lib/sorteos/sorteo-ticket-storage";
+import { ticketPublicUrl } from "@/lib/sorteos/ticket-public-link";
 
 export async function GET(
   request: NextRequest,
@@ -37,7 +38,24 @@ export async function GET(
     if (!signed.url) {
       return NextResponse.json(errorResponse(signed.error ?? "signed_url"), { status: 500 });
     }
-    return NextResponse.json(successResponse({ url: signed.url, expires_in: ttl }));
+    /**
+     * `public_url` es el link corto `/t/<token>` para compartir por WhatsApp: la signed URL de
+     * Storage ronda los 500 caracteres y WhatsApp no le arma preview.
+     */
+    let publicUrl: string | null = null;
+    try {
+      const origin =
+        request.headers.get("x-forwarded-host")
+          ? `${request.headers.get("x-forwarded-proto") ?? "https"}://${request.headers.get("x-forwarded-host")}`
+          : url.origin;
+      publicUrl = ticketPublicUrl(origin, id);
+    } catch {
+      /* sin secret configurado: se comparte sin link corto */
+    }
+
+    return NextResponse.json(
+      successResponse({ url: signed.url, expires_in: ttl, public_url: publicUrl })
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Error";
     return NextResponse.json(errorResponse(msg), { status: 500 });
