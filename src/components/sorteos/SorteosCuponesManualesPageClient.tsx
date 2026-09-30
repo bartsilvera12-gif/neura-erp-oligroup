@@ -18,14 +18,14 @@ export default function SorteosCuponesManualesPageClient() {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-[#4FAEB2]/45 bg-white p-5 shadow-sm">
+      <div className="rounded-2xl border border-[#4FAEB2]/45 bg-white p-4 shadow-sm sm:p-5">
         <label className="flex flex-col gap-1.5">
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Sorteo</span>
           <select
             value={sorteoId}
             onChange={(e) => setSorteoId(e.target.value)}
             disabled={loadingSorteos}
-            className="w-full max-w-md rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm transition-colors hover:border-[#4FAEB2]/60 focus:border-[#4FAEB2] focus:outline-none focus:ring-2 focus:ring-[#4FAEB2]/20 disabled:opacity-60"
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-base text-slate-900 shadow-sm transition-colors hover:border-[#4FAEB2]/60 focus:border-[#4FAEB2] focus:outline-none focus:ring-2 focus:ring-[#4FAEB2]/20 disabled:opacity-60 sm:max-w-md sm:py-2 sm:text-sm"
           >
             <option value="">{loadingSorteos ? "Cargando sorteos…" : "Seleccionar sorteo"}</option>
             {sorteos.map((s) => (
@@ -42,14 +42,14 @@ export default function SorteosCuponesManualesPageClient() {
           </div>
         ) : null}
         {!loadingSorteos && !loadErr && sorteos.length === 0 ? (
-          <p className="mt-3 text-xs text-slate-500">No hay sorteos disponibles.</p>
+          <p className="mt-3 text-xs text-slate-500">No hay sorteos activos.</p>
         ) : null}
       </div>
 
       {sorteoId ? (
-        <div className="max-w-lg rounded-2xl border border-[#4FAEB2]/45 bg-white shadow-sm">
-          <div className="border-b border-slate-200 px-5 py-3">
-            <h2 className="text-lg font-semibold text-slate-800">Venta presencial (efectivo)</h2>
+        <div className="w-full rounded-2xl border border-[#4FAEB2]/45 bg-white shadow-sm sm:max-w-lg">
+          <div className="border-b border-slate-200 px-4 py-3 sm:px-5">
+            <h2 className="text-base font-semibold text-slate-800 sm:text-lg">Venta presencial (efectivo)</h2>
           </div>
           {/* key: al cambiar de sorteo se reinicia el formulario (nueva clave de idempotencia). */}
           <SorteoCuponManualForm key={sorteoId} sorteos={sorteos} sorteoId={sorteoId} />
