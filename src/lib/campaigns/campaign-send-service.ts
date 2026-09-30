@@ -100,8 +100,11 @@ async function ensureContactAndConversationForCampaign(
       status: "open",
       flow_code: null,
       flow_current_node: null,
-      flow_status: "human",
-      human_taken_over: true,
+      // La conversación creada por el masivo queda del lado del BOT (no del inbox humano).
+      // Antes se marcaba human_taken_over=true y caía toda al inbox; ahora, cuando el cliente
+      // responde, el flujo activo la toma. El Inbox se reserva para intervención humana real.
+      flow_status: "bot",
+      human_taken_over: false,
       last_message_at: null,
       last_message_preview: null,
       unread_count: 0,
