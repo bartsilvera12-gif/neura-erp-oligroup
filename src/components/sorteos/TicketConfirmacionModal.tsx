@@ -63,6 +63,11 @@ export default function TicketConfirmacionModal({
     () => (numeroOrden ? `ticket-orden-${numeroOrden}.png` : "ticket.png"),
     [numeroOrden]
   );
+  const nombrePdf = useMemo(
+    () => (numeroOrden ? `ticket-orden-${numeroOrden}.pdf` : "ticket.pdf"),
+    [numeroOrden]
+  );
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const mensaje = useMemo(() => {
     const totalGs = new Intl.NumberFormat("es-PY").format(Math.round(montoTotal || 0));
@@ -128,20 +133,101 @@ export default function TicketConfirmacionModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  /** Descarga el PNG para poder adjuntarlo a mano cuando no hay Web Share. */
+  const dispararDescarga = useCallback((href: string, nombre: string) => {
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = nombre;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, []);
+
+  /**
+   * PNG. Es lo que consume el envío por WhatsApp: baja a la galería del teléfono, que es de
+   * donde el operador lo adjunta. Un PDF ahí caería en Documentos y rompería ese flujo.
+   */
   const descargarTicket = useCallback(() => {
     if (!signedUrl) return;
     const dlUrl = `${signedUrl}${signedUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(
       nombreArchivo
     )}`;
-    const a = document.createElement("a");
-    a.href = dlUrl;
-    a.download = nombreArchivo;
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }, [signedUrl, nombreArchivo]);
+    dispararDescarga(dlUrl, nombreArchivo);
+  }, [signedUrl, nombreArchivo, dispararDescarga]);
+
+  /**
+   * PDF de verdad, para archivar o mandar a imprimir. Se arma en el navegador con pdf-lib,
+   * que ya es dependencia del proyecto; el import es dinámico para no cargar la librería en
+   * quienes nunca tocan el botón.
+   *
+   * Con PNG: una página del tamaño exacto de la imagen. Sin PNG: el comprobante en texto.
+   */
+  const descargarPdf = useCallback(async () => {
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+      const pdf = await PDFDocument.create();
+
+      if (signedUrl) {
+        const res = await fetch(signedUrl, { cache: "no-store" });
+        if (!res.ok) throw new Error("No se pudo leer la imagen del ticket");
+        const bytes = await res.arrayBuffer();
+        const png = await pdf.embedPng(bytes);
+        const page = pdf.addPage([png.width, png.height]);
+        page.drawImage(png, { x: 0, y: 0, width: png.width, height: png.height });
+      } else {
+        /** Ticket A6, que es el tamaño típico de un comprobante de mostrador. */
+        const page = pdf.addPage([298, 420]);
+        const font = await pdf.embedFont(StandardFonts.Helvetica);
+        const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+        const tinta = rgb(0.06, 0.09, 0.16);
+        let y = 370;
+        const linea = (texto: string, size: number, f = font) => {
+          const ancho = f.widthOfTextAtSize(texto, size);
+          page.drawText(texto, { x: (298 - ancho) / 2, y, size, font: f, color: tinta });
+          y -= size + 10;
+        };
+        linea("Comprobante de compra", 14, bold);
+        if (numeroOrden) linea(`Orden N ${numeroOrden}`, 12);
+        if (nombreCliente) linea(nombreCliente, 11);
+        if (cupones.length > 0) {
+          y -= 8;
+          linea(cupones.length === 1 ? "NUMERO" : "NUMEROS", 9);
+          for (const c of cupones) linea(c, 16, bold);
+        }
+        y -= 8;
+        linea(
+          `Total: Gs. ${new Intl.NumberFormat("es-PY").format(Math.round(montoTotal || 0))}`,
+          12,
+          bold
+        );
+      }
+
+      const salida = await pdf.save();
+      /** Copia a un ArrayBuffer propio: el Uint8Array de pdf-lib no siempre sirve como BlobPart. */
+      const copia = new Uint8Array(salida);
+      const url = URL.createObjectURL(new Blob([copia], { type: "application/pdf" }));
+      dispararDescarga(url, nombrePdf);
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (e) {
+      setEnvio({
+        estado: "error",
+        mensaje: e instanceof Error ? e.message : "No se pudo generar el PDF.",
+      });
+    } finally {
+      setPdfBusy(false);
+    }
+  }, [
+    pdfBusy,
+    signedUrl,
+    numeroOrden,
+    nombreCliente,
+    cupones,
+    montoTotal,
+    nombrePdf,
+    dispararDescarga,
+  ]);
 
   const abrirWaMe = useCallback(() => {
     const base = waDigits ? `https://wa.me/${waDigits}` : "https://wa.me/";
@@ -326,19 +412,19 @@ export default function TicketConfirmacionModal({
           ) : null}
           <p className="mb-2 text-[11px] leading-snug text-slate-500">
             “Enviar por WhatsApp” descarga el ticket y abre el chat del número de la compra con
-            el mensaje listo: adjuntá la imagen con 📎 → Galería. “Imprimir / PDF” abre el
-            diálogo del sistema, donde elegís tu impresora o “Guardar como PDF”.
+            el mensaje listo: adjuntá la imagen con 📎 → Galería (por eso esa descarga es PNG).
+            “Descargar PDF” guarda el archivo para archivar o imprimir, e “Imprimir / PDF” abre
+            el diálogo del sistema con tu impresora.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
-            {signedUrl ? (
-              <button
-                type="button"
-                onClick={descargarTicket}
-                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:w-auto"
-              >
-                ⬇ Descargar
-              </button>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => void descargarPdf()}
+              disabled={pdfBusy}
+              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto"
+            >
+              {pdfBusy ? "Generando…" : "⬇ Descargar PDF"}
+            </button>
             <button
               type="button"
               onClick={imprimir}
