@@ -221,10 +221,12 @@ export default function TicketConfirmacionModal({
      * con el texto y se descarga el PNG para adjuntarlo a mano.
      */
     abrirWaMe();
-    descargarTicket();
+    if (signedUrl) descargarTicket();
     setEnvio({
       estado: "ok",
-      mensaje: `Se abrió el chat de ${telefonoCliente || "WhatsApp"} y se descargó el ticket: adjuntalo en el chat.`,
+      mensaje: signedUrl
+        ? `Se abrió el chat de ${telefonoCliente || "WhatsApp"} y se descargó el ticket: adjuntalo en el chat.`
+        : `Se abrió el chat de ${telefonoCliente || "WhatsApp"} con el mensaje y los números.`,
     });
   }, [
     envio.estado,
@@ -235,31 +237,61 @@ export default function TicketConfirmacionModal({
     descargarTicket,
     telefonoCliente,
     waDigits,
+    signedUrl,
   ]);
 
   const imprimir = useCallback(() => {
-    if (!signedUrl) return;
     /**
-     * Ventana nueva con SOLO la imagen del ticket: dispara print() al cargar y se
-     * cierra al terminar, así no sale impreso el resto del ERP.
+     * Ventana nueva con SOLO el comprobante: dispara print() al cargar y se cierra al
+     * terminar, así no sale impreso el resto del ERP.
+     *
+     * Con PNG se imprime la imagen; sin PNG (sorteo en modo solo texto, o generación
+     * fallida) se imprime igual un comprobante con orden, cupones y total, que es lo
+     * que el cliente se lleva del mostrador.
      */
     const win = window.open("", "_blank", "noopener,noreferrer,width=600,height=800");
     if (!win) return;
+
+    const titulo = `Ticket ${numeroOrden ?? ""}`;
+    const cuerpo = signedUrl
+      ? `<img src="${signedUrl}" alt="Ticket" onload="setTimeout(function(){ window.print(); }, 250);" />`
+      : `<div class="tk">
+           <h1>Comprobante de compra</h1>
+           ${numeroOrden ? `<p class="orden">Orden Nº ${numeroOrden}</p>` : ""}
+           ${nombreCliente ? `<p>${nombreCliente}</p>` : ""}
+           ${
+             cupones.length
+               ? `<p class="lbl">${cupones.length === 1 ? "Número" : "Números"}</p>
+                  <p class="nums">${cupones.join(" · ")}</p>`
+               : ""
+           }
+           <p class="total">Total: Gs. ${new Intl.NumberFormat("es-PY").format(
+             Math.round(montoTotal || 0)
+           )}</p>
+         </div>
+         <script>setTimeout(function(){ window.print(); }, 150);<\/script>`;
+
     win.document.write(`<!doctype html>
-<html><head><meta charset="utf-8"><title>Ticket ${numeroOrden ?? ""}</title>
+<html><head><meta charset="utf-8"><title>${titulo}</title>
 <style>
   @page { margin: 0; }
-  html, body { margin: 0; padding: 0; background: #fff; }
+  html, body { margin: 0; padding: 0; background: #fff; font-family: system-ui, sans-serif; }
   img { display: block; max-width: 100%; margin: 0 auto; }
+  .tk { padding: 24px; text-align: center; color: #0f172a; }
+  .tk h1 { font-size: 16px; margin: 0 0 12px; }
+  .orden { font-size: 14px; margin: 0 0 4px; }
+  .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: #64748b; margin: 16px 0 4px; }
+  .nums { font-family: ui-monospace, monospace; font-size: 18px; font-weight: 700; margin: 0; }
+  .total { margin-top: 16px; font-size: 15px; font-weight: 700; }
 </style>
 </head><body>
-  <img src="${signedUrl}" alt="Ticket" onload="setTimeout(function(){ window.print(); }, 250);" />
+  ${cuerpo}
   <script>
     window.onafterprint = function() { window.close(); };
-  </script>
+  <\/script>
 </body></html>`);
     win.document.close();
-  }, [signedUrl, numeroOrden]);
+  }, [signedUrl, numeroOrden, nombreCliente, cupones, montoTotal]);
 
   if (!open) return null;
 
@@ -299,7 +331,13 @@ export default function TicketConfirmacionModal({
         ) : null}
 
         <div className="flex-1 overflow-auto bg-slate-50 p-3 sm:p-4">
-          {loadingUrl ? (
+          {!deliveryId ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Esta venta no generó imagen de ticket (el sorteo está en modo solo texto o no tiene
+              imagen configurada). Igual podés imprimir el comprobante y mandar los números por
+              WhatsApp.
+            </div>
+          ) : loadingUrl ? (
             <div className="flex h-64 items-center justify-center text-sm text-slate-500">
               Cargando ticket…
             </div>
@@ -339,18 +377,18 @@ export default function TicketConfirmacionModal({
             preview con la imagen.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
-            <button
-              type="button"
-              onClick={descargarTicket}
-              disabled={!signedUrl}
-              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto"
-            >
-              ⬇ Descargar
-            </button>
+            {signedUrl ? (
+              <button
+                type="button"
+                onClick={descargarTicket}
+                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:w-auto"
+              >
+                ⬇ Descargar
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={imprimir}
-              disabled={!signedUrl}
               className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:w-auto"
             >
               🖨 Imprimir
@@ -366,7 +404,7 @@ export default function TicketConfirmacionModal({
             <button
               type="button"
               onClick={() => void compartir()}
-              disabled={!signedUrl || envio.estado === "compartiendo"}
+              disabled={envio.estado === "compartiendo"}
               className="w-full rounded-lg bg-[#25D366] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1FB955] disabled:opacity-50 sm:w-auto"
             >
               {envio.estado === "compartiendo" ? "Compartiendo…" : "📲 Enviar ticket"}

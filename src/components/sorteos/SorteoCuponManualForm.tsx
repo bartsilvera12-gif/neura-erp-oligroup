@@ -142,9 +142,6 @@ type Props = {
 
 const formatGs = (n: number) => new Intl.NumberFormat("es-PY").format(Math.round(n || 0));
 
-/** Opción "otro monto": habilita los campos libres de cantidad y monto. */
-const MANUAL_PROMO_ID = "__manual__";
-
 const EMPTY_FIELDS = {
   nombre: "",
   apellido: "",
@@ -195,7 +192,12 @@ export default function SorteoCuponManualForm({
   /** `""` = ninguna promo elegida todavía; `MANUAL` = carga libre de cantidad y monto. */
   const [promoId, setPromoId] = useState("");
   const promoSel = useMemo(() => promos.find((p) => p.id === promoId) ?? null, [promos, promoId]);
-  const modoManual = promoId === MANUAL_PROMO_ID || promos.length === 0;
+  /**
+   * Carga libre de cantidad y monto solo como red de seguridad: si el flujo del bot no tiene
+   * promos cargadas, la pantalla quedaría inutilizable. Con promas disponibles, el vendedor
+   * elige una — no hay opción de escribir un monto a mano.
+   */
+  const modoManual = promos.length === 0;
 
   useEffect(() => {
     setIdempotencyKey(crypto.randomUUID());
@@ -213,7 +215,7 @@ export default function SorteoCuponManualForm({
     (id: string) => {
       setPromoId(id);
       setSubmitErr(null);
-      if (id === MANUAL_PROMO_ID || !id) return;
+      if (!id) return;
       const p = promos.find((x) => x.id === id);
       if (!p) return;
       setForm((prev) => ({
@@ -253,7 +255,7 @@ export default function SorteoCuponManualForm({
       return;
     }
     if (promos.length > 0 && !promoId) {
-      setSubmitErr("Elegí una promo (o “Otro monto” para cargarlo a mano).");
+      setSubmitErr("Elegí una promo.");
       return;
     }
     if (!form.nombre.trim() || !form.apellido.trim()) {
@@ -349,8 +351,13 @@ export default function SorteoCuponManualForm({
         telefono: form.telefono.trim(),
         monto: Number.isFinite(monto) ? monto : 0,
       });
-      /** Con ticket generado, el modal es el cierre de la venta: ver, enviar o imprimir. */
-      if (deliveryId) setTicketOpen(true);
+      /**
+       * El modal es el cierre de TODA venta, haya PNG o no: sin imagen igual muestra los
+       * números, imprime el comprobante y permite mandarlo por WhatsApp. Antes solo se
+       * abría con `delivery_id`, así que en los sorteos en modo solo texto la venta
+       * terminaba en un cartelito y el vendedor se quedaba sin nada que darle al cliente.
+       */
+      setTicketOpen(true);
       setForm((p) => ({ ...p, ...EMPTY_FIELDS }));
       // Venta registrada: la próxima carga es otra venta (misma clave devolvería esta orden).
       setIdempotencyKey(crypto.randomUUID());
@@ -502,19 +509,6 @@ export default function SorteoCuponManualForm({
                 </button>
               );
             })}
-            <button
-              type="button"
-              onClick={() => onPromoChange(MANUAL_PROMO_ID)}
-              aria-pressed={promoId === MANUAL_PROMO_ID}
-              className={`flex flex-col items-start gap-0.5 rounded-xl border border-dashed px-3 py-2.5 text-left transition-colors ${
-                promoId === MANUAL_PROMO_ID
-                  ? "border-[#4FAEB2] bg-[#4FAEB2]/10 text-slate-900 ring-2 ring-[#4FAEB2]/25"
-                  : "border-slate-300 bg-white text-slate-700 hover:border-[#4FAEB2]/60"
-              }`}
-            >
-              <span className="text-sm font-semibold leading-tight">Otro monto</span>
-              <span className="text-[11px] text-slate-500">Cargar cantidad y monto a mano</span>
-            </button>
           </div>
         </div>
       ) : null}
