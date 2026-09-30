@@ -35,6 +35,12 @@ export async function GET(request: NextRequest) {
       .order("created_at", { ascending: false });
 
     if (error) {
+      /** Log con contexto: sin esto, en producción solo se ve "no se pudieron cargar". */
+      console.error("[sorteos][manual-options][error]", {
+        empresa_id: empresaId,
+        message: error.message,
+        code: (error as { code?: string }).code ?? null,
+      });
       return NextResponse.json(errorResponse(error.message), { status: 400 });
     }
 

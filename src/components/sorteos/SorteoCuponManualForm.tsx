@@ -19,10 +19,25 @@ export type SorteoListItem = {
   ticket_delivery_mode?: string;
 };
 
+type RespuestaSorteos = { success?: boolean; data?: SorteoListItem[]; error?: string };
+
+/** Motivo real del fallo, para que el cartel de la pantalla diga algo accionable. */
+function detalleError(res: Response, json: RespuestaSorteos | null): string {
+  const msg = (json?.error ?? "").trim();
+  if (msg) return `${msg} (HTTP ${res.status})`;
+  if (res.status === 401) return "La sesión expiró (HTTP 401). Volvé a entrar.";
+  if (res.status === 403) return "El usuario no tiene permiso sobre los sorteos (HTTP 403).";
+  if (res.status === 404) return "El endpoint no existe en esta versión desplegada (HTTP 404).";
+  return `HTTP ${res.status}`;
+}
+
 /**
- * Sorteos elegibles para el alta manual (GET /api/sorteos/manual-options): solo id + nombre de los
- * activos. No usa `GET /api/sorteos`, que devuelve la fila completa con boletos vendidos y
- * recaudación — datos que el operador de cupón manual no necesita ni debe recibir.
+ * Sorteos elegibles para el alta manual.
+ *
+ * Primero `GET /api/sorteos/manual-options`, que devuelve solo id + nombre de los activos: el
+ * operador de cupón manual no necesita la fila completa con boletos vendidos y recaudación.
+ * Si ese endpoint falla, cae a `GET /api/sorteos` para no dejar la pantalla inutilizable, y el
+ * error queda visible con su causa en vez del genérico "no se pudieron cargar".
  */
 export function useSorteosCuponManual(enabled: boolean) {
   const [sorteos, setSorteos] = useState<SorteoListItem[]>([]);
@@ -32,19 +47,36 @@ export function useSorteosCuponManual(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+
+    const pedir = async (url: string): Promise<{ lista: SorteoListItem[] } | { error: string }> => {
+      const res = await fetchWithSupabaseSession(url, { cache: "no-store" });
+      const json = (await res.json().catch(() => null)) as RespuestaSorteos | null;
+      if (!res.ok || !json?.success || !Array.isArray(json.data)) {
+        return { error: detalleError(res, json) };
+      }
+      return { lista: json.data };
+    };
+
     (async () => {
       setLoadErr(null);
       setLoadingSorteos(true);
       try {
-        const res = await fetchWithSupabaseSession("/api/sorteos/manual-options", {
-          cache: "no-store",
-        });
-        const json = (await res.json()) as { success?: boolean; data?: SorteoListItem[] };
-        if (!res.ok || !json.success || !Array.isArray(json.data)) {
-          if (!cancelled) setLoadErr("No se pudieron cargar los sorteos.");
+        const principal = await pedir("/api/sorteos/manual-options");
+        if (cancelled) return;
+        if ("lista" in principal) {
+          setSorteos(principal.lista);
           return;
         }
-        if (!cancelled) setSorteos(json.data);
+
+        console.warn("[cupon-manual] manual-options falló, probando /api/sorteos:", principal.error);
+        const fallback = await pedir("/api/sorteos");
+        if (cancelled) return;
+        if ("lista" in fallback) {
+          const activos = fallback.lista.filter((s) => (s.estado ?? "activo") === "activo");
+          setSorteos(activos.length > 0 ? activos : fallback.lista);
+          return;
+        }
+        setLoadErr(`No se pudieron cargar los sorteos: ${principal.error}`);
       } catch {
         if (!cancelled) setLoadErr("Error de red al cargar sorteos.");
       } finally {
