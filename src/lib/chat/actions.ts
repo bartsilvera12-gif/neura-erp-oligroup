@@ -1711,6 +1711,7 @@ export type ChatChannelFormInput = {
   bot_wake_keywords_enabled?: boolean;
   bot_wake_keywords?: string[];
   bot_wake_keywords_match_mode?: BotWakeKeywordsMatchMode;
+  bot_wake_on_any_message?: boolean;
 };
 
 function metaChannelConfigStatus(params: {
@@ -1742,6 +1743,7 @@ export type YCloudWhatsappChannelInput = {
   bot_wake_keywords_enabled?: boolean;
   bot_wake_keywords?: string[];
   bot_wake_keywords_match_mode?: BotWakeKeywordsMatchMode;
+  bot_wake_on_any_message?: boolean;
 };
 
 /** WhatsApp vía YCloud (coexistencia). Sin ruta omnicanal Meta. */
@@ -1806,6 +1808,7 @@ export async function saveYCloudWhatsappChannel(input: YCloudWhatsappChannelInpu
     bot_wake_keywords_enabled: input.bot_wake_keywords_enabled,
     bot_wake_keywords: input.bot_wake_keywords,
     bot_wake_keywords_match_mode: input.bot_wake_keywords_match_mode,
+    bot_wake_on_any_message: input.bot_wake_on_any_message,
   });
 
   const hasKey =
@@ -2151,6 +2154,7 @@ export async function saveChatChannel(input: ChatChannelFormInput): Promise<stri
     bot_wake_keywords_enabled: input.bot_wake_keywords_enabled,
     bot_wake_keywords: input.bot_wake_keywords,
     bot_wake_keywords_match_mode: input.bot_wake_keywords_match_mode,
+    bot_wake_on_any_message: input.bot_wake_on_any_message,
   });
 
   const tokenPatch = input.whatsapp_access_token?.trim();

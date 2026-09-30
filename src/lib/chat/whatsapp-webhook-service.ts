@@ -24,7 +24,7 @@ import {
 } from "@/lib/chat/conversation-send-context";
 import { attachInboundMessageMedia } from "@/lib/chat/inbound-media-attach";
 import { fetchChatChannelConfigForWebhookWakeKeywords } from "@/lib/chat/fetch-channel-config-webhook";
-import { evaluateBotWakeForInbound } from "@/lib/chat/bot-wake-keywords";
+import { evaluateBotWakeForInbound, shouldWakeBotOnAnyMessage } from "@/lib/chat/bot-wake-keywords";
 import { maybeRestartForPurchaseIntent } from "@/lib/chat/flow-restart-intent";
 import {
   CONV_LOG,
@@ -277,6 +277,27 @@ async function flowImageInboundAlreadyRecorded(
     const p = r.payload as Record<string, unknown> | null | undefined;
     return typeof p?.wa_message_id === "string" && p.wa_message_id === waMessageId;
   });
+}
+
+/** ¿Alguien del equipo ya contestó en esta conversación? Si sí, el bot no la toma. */
+async function conversationHasAgentReply(
+  supabase: SupabaseAdmin,
+  empresaId: string,
+  conversationId: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("empresa_id", empresaId)
+    .eq("sender_type", "human")
+    .limit(1);
+  if (error) {
+    // Ante la duda no despertamos: es peor pisar a un agente que no despertar.
+    console.warn("[wake_on_any_message]", "agent_reply_check_failed", { message: error.message });
+    return true;
+  }
+  return Boolean(data?.length);
 }
 
 function extractMetaButtonId(msg: MetaInboundMessage): string | null {
@@ -1061,6 +1082,77 @@ export async function processInboundWebhookValue(
             flow_current_node: convNode,
             new_flow_session_id: pi.new_flow_session_id,
             reason: pi.reason,
+          });
+        }
+      }
+
+      /**
+       * Despertar por cualquier mensaje (opt-in por canal).
+       *
+       * Caso de uso: una campaña deja miles de conversaciones dormidas en el
+       * inbox. Si nadie del equipo llega a atenderlas, la persona escribe y no
+       * recibe nada. Con esto el bot manda el primer mensaje al toque.
+       *
+       * No pisa a nadie: no corre si la persona está a mitad del flujo
+       * (`flow_session_active`) ni si un agente ya contestó en esa conversación
+       * (`agent_already_replied`). Ver `shouldWakeBotOnAnyMessage`.
+       */
+      if (!restartedThisMessage) {
+        const hasActiveFlowSession = Boolean(
+          (existingConv as { active_flow_session_id?: string | null }).active_flow_session_id
+        );
+        const anyMessagePreCheck = shouldWakeBotOnAnyMessage({
+          channelConfig: channelWakeConfig,
+          alreadyRestarted: restartedThisMessage,
+          hasActiveFlowSession,
+          agentHasReplied: false,
+        });
+
+        if (anyMessagePreCheck.wake) {
+          const agentHasReplied = await conversationHasAgentReply(supabase, empresaId, conversationId);
+          const decision = shouldWakeBotOnAnyMessage({
+            channelConfig: channelWakeConfig,
+            alreadyRestarted: restartedThisMessage,
+            hasActiveFlowSession,
+            agentHasReplied,
+          });
+
+          if (decision.wake) {
+            const rrAny = await restartWhatsappConversationToFlowStart(supabase, empresaId, conversationId, {
+              preferFlowCode: convFlow,
+              trigger: "wake_on_any_message",
+            });
+            console.info(CONV_LOG, "wake_on_any_message", {
+              conversationId,
+              message_type,
+              restarted: rrAny.restarted,
+              reason: rrAny.reason,
+              was_human: convHuman || convFlowStatus === "human",
+            });
+            if (rrAny.restarted) {
+              convFlow = rrAny.flow_code;
+              convNode = rrAny.flow_current_node;
+              convHuman = false;
+              convFlowStatus = "bot";
+              restartedThisMessage = true;
+              existingConv = {
+                ...existingConv,
+                flow_code: convFlow,
+                flow_current_node: convNode,
+                human_taken_over: false,
+                flow_status: "bot",
+              };
+            }
+          } else {
+            console.info(CONV_LOG, "wake_on_any_message_skipped", {
+              conversationId,
+              reason: decision.reason,
+            });
+          }
+        } else if (anyMessagePreCheck.reason !== "disabled") {
+          console.info(CONV_LOG, "wake_on_any_message_skipped", {
+            conversationId,
+            reason: anyMessagePreCheck.reason,
           });
         }
       }

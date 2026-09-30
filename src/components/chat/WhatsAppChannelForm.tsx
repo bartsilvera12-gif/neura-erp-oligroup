@@ -231,6 +231,7 @@ export function WhatsAppChannelForm({
             bot_wake_keywords_enabled: wakeSettings.enabled,
             bot_wake_keywords: wakeSettings.keywords,
             bot_wake_keywords_match_mode: wakeSettings.matchMode,
+            bot_wake_on_any_message: wakeSettings.wakeOnAnyMessage,
           });
           setSuccess("Cambios guardados.");
           onSaved?.(id);
@@ -250,6 +251,7 @@ export function WhatsAppChannelForm({
             bot_wake_keywords_enabled: wakeSettings.enabled,
             bot_wake_keywords: wakeSettings.keywords,
             bot_wake_keywords_match_mode: wakeSettings.matchMode,
+            bot_wake_on_any_message: wakeSettings.wakeOnAnyMessage,
           });
           setSuccess("Canal creado.");
           onSaved?.(id);
@@ -271,6 +273,7 @@ export function WhatsAppChannelForm({
           bot_wake_keywords_enabled: wakeSettings.enabled,
           bot_wake_keywords: wakeSettings.keywords,
           bot_wake_keywords_match_mode: wakeSettings.matchMode,
+            bot_wake_on_any_message: wakeSettings.wakeOnAnyMessage,
         });
         setSuccess("Cambios guardados.");
         onSaved?.(id);
@@ -284,6 +287,7 @@ export function WhatsAppChannelForm({
           bot_wake_keywords_enabled: wakeSettings.enabled,
           bot_wake_keywords: wakeSettings.keywords,
           bot_wake_keywords_match_mode: wakeSettings.matchMode,
+            bot_wake_on_any_message: wakeSettings.wakeOnAnyMessage,
         });
         setSuccess("Canal creado.");
         onSaved?.(id);

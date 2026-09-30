@@ -63,6 +63,26 @@ export function BotWakeKeywordsSection({ value, onChange }: Props) {
 
   return (
     <div className="space-y-4">
+      <div className="rounded-lg border border-[#4FAEB2]/40 bg-[#4FAEB2]/5 p-3">
+        <label className="flex items-start gap-2 text-sm font-medium text-slate-800">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={value.wakeOnAnyMessage}
+            onChange={(e) => onChange({ ...value, wakeOnAnyMessage: e.target.checked })}
+          />
+          Despertar el bot con cualquier mensaje
+        </label>
+        <p className="mt-1 text-xs text-slate-600">
+          El bot manda el primer mensaje apenas la persona escribe, sin esperar a que alguien del equipo la
+          atienda. Útil después de una campaña, cuando quedan muchas conversaciones esperando.
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          No interrumpe a nadie: no se activa si la persona está a mitad del flujo, ni si alguien del equipo ya
+          contestó en esa conversación.
+        </p>
+      </div>
+
       <label className="flex items-center gap-2 text-sm text-slate-800">
         <input
           type="checkbox"

@@ -23,6 +23,8 @@ export type BotWakeKeywordsFormState = {
   enabled: boolean;
   keywords: string[];
   matchMode: BotWakeKeywordsMatchMode;
+  /** Despertar el bot con cualquier mensaje entrante, sin depender de palabras clave. */
+  wakeOnAnyMessage: boolean;
 };
 
 export type BotWakeKeywordMatchMeta = {
@@ -103,7 +105,58 @@ export function parseBotWakeKeywordsSettingsFromConfig(config: unknown): BotWake
     enabled: c.bot_wake_keywords_enabled === true,
     keywords,
     matchMode: parseBotWakeKeywordsMatchMode(c.bot_wake_keywords_match_mode),
+    wakeOnAnyMessage: c.bot_wake_on_any_message === true,
   };
+}
+
+/**
+ * Despertar por cualquier mensaje. Pensado para conversaciones que quedaron
+ * dormidas en el inbox esperando a una persona: el bot manda el primer mensaje
+ * en vez de dejarlas ahí. Quien decide si la conversación califica es el
+ * webhook (ver `shouldWakeBotOnAnyMessage`).
+ */
+export function isBotWakeOnAnyMessageEnabled(
+  config: Record<string, unknown> | null | undefined
+): boolean {
+  return config?.bot_wake_on_any_message === true;
+}
+
+export type BotWakeOnAnyMessageDecision = {
+  wake: boolean;
+  reason:
+    | "disabled"
+    | "already_restarted"
+    | "flow_session_active"
+    | "agent_already_replied"
+    | "wake";
+};
+
+/**
+ * Reglas de seguridad, por orden:
+ *
+ * - `flow_session_active`: la persona está a mitad del flujo (eligiendo cantidad,
+ *   mandando el comprobante, escribiendo su cédula). Reiniciar ahí la dejaría en
+ *   un loop sin poder terminar nunca la compra.
+ * - `agent_already_replied`: alguien del equipo ya contestó en esa conversación.
+ *   El bot no se la quita de las manos.
+ *
+ * El modo humano por sí solo NO bloquea: las conversaciones que la campaña dejó
+ * marcadas como humanas sin que nadie las atendiera son justamente las que hay
+ * que despertar.
+ */
+export function shouldWakeBotOnAnyMessage(args: {
+  channelConfig: Record<string, unknown> | null | undefined;
+  alreadyRestarted: boolean;
+  hasActiveFlowSession: boolean;
+  agentHasReplied: boolean;
+}): BotWakeOnAnyMessageDecision {
+  if (!isBotWakeOnAnyMessageEnabled(args.channelConfig)) {
+    return { wake: false, reason: "disabled" };
+  }
+  if (args.alreadyRestarted) return { wake: false, reason: "already_restarted" };
+  if (args.hasActiveFlowSession) return { wake: false, reason: "flow_session_active" };
+  if (args.agentHasReplied) return { wake: false, reason: "agent_already_replied" };
+  return { wake: true, reason: "wake" };
 }
 
 export function sanitizeBotWakeKeywordsForPersistence(
@@ -112,6 +165,7 @@ export function sanitizeBotWakeKeywordsForPersistence(
   bot_wake_keywords_enabled: boolean;
   bot_wake_keywords: string[];
   bot_wake_keywords_match_mode: BotWakeKeywordsMatchMode;
+  bot_wake_on_any_message: boolean;
 } {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -130,6 +184,7 @@ export function sanitizeBotWakeKeywordsForPersistence(
     bot_wake_keywords_enabled: Boolean(state.enabled),
     bot_wake_keywords: out,
     bot_wake_keywords_match_mode: state.matchMode === "starts_with" ? "starts_with" : "exact",
+    bot_wake_on_any_message: Boolean(state.wakeOnAnyMessage),
   };
 }
 
@@ -140,12 +195,14 @@ export function applyBotWakeKeywordsInputToChannelConfig(
     bot_wake_keywords_enabled: boolean;
     bot_wake_keywords: string[];
     bot_wake_keywords_match_mode: BotWakeKeywordsMatchMode;
+    bot_wake_on_any_message: boolean;
   }>
 ): void {
   if (
     input.bot_wake_keywords_enabled === undefined &&
     input.bot_wake_keywords === undefined &&
-    input.bot_wake_keywords_match_mode === undefined
+    input.bot_wake_keywords_match_mode === undefined &&
+    input.bot_wake_on_any_message === undefined
   ) {
     return;
   }
@@ -154,10 +211,12 @@ export function applyBotWakeKeywordsInputToChannelConfig(
     keywords: Array.isArray(input.bot_wake_keywords) ? input.bot_wake_keywords : [],
     matchMode:
       input.bot_wake_keywords_match_mode === "starts_with" ? "starts_with" : "exact",
+    wakeOnAnyMessage: input.bot_wake_on_any_message ?? false,
   });
   config.bot_wake_keywords_enabled = sanitized.bot_wake_keywords_enabled;
   config.bot_wake_keywords = sanitized.bot_wake_keywords;
   config.bot_wake_keywords_match_mode = sanitized.bot_wake_keywords_match_mode;
+  config.bot_wake_on_any_message = sanitized.bot_wake_on_any_message;
 }
 
 function sortPhrasesForMatching(phrases: string[]): string[] {
