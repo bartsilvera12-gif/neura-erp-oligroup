@@ -55,6 +55,7 @@
     "qa:campaign-template-vars": "tsx scripts/qa-campaign-template-variables.ts",
     "qa:upstream-error": "tsx scripts/qa-upstream-error.ts",
     "qa:campaign-import-limits": "tsx scripts/qa-campaign-import-limits.ts",
+    "chat:send-recovery": "tsx scripts/send-recovery-messages.ts",
     "qa:bot-wake-any-message": "tsx scripts/qa-bot-wake-on-any-message.ts",
     "qa:bot-wake-on-button": "tsx scripts/qa-bot-wake-on-button.ts",
     "qa:chat-flow-node-fks": "node scripts/qa-chat-flow-node-fks-tenants.cjs",

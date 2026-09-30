@@ -1266,6 +1266,37 @@ export function createFlowEngine(ctx: FlowEngineContext) {
     });
   }
 
+  /** Aviso cuando llega texto a un nodo de opciones. */
+  const CHOICE_REMINDER_TEXT =
+    "Para seguir, tocá una de las opciones de abajo 👇";
+
+  /** Ventana anti-spam del aviso de opciones. */
+  const CHOICE_REMINDER_WINDOW_MS = 60_000;
+
+  /**
+   * Evita repetir el aviso ante reintentos del webhook o varios textos seguidos.
+   * Pasada la ventana vuelve a avisar: la persona sigue trabada y merece el recordatorio.
+   */
+  async function choiceReminderSentRecently(
+    conversationId: string,
+    nodeCode: string
+  ): Promise<boolean> {
+    const desde = new Date(Date.now() - CHOICE_REMINDER_WINDOW_MS).toISOString();
+    const { data, error } = await supabase
+      .from("chat_flow_events")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .eq("event_type", "choice_expected_text_received")
+      .eq("node_code", nodeCode)
+      .gte("created_at", desde)
+      .limit(1);
+    if (error) {
+      console.warn("[flow-runtime]", "choice_reminder_check_failed", { message: error.message });
+      return false;
+    }
+    return Boolean(data?.length);
+  }
+
   async function buildImageInputReminderText(
     node: FlowNode,
     conversationId: string,
@@ -3394,6 +3425,56 @@ export function createFlowEngine(ctx: FlowEngineContext) {
       });
       return { ok: true, status: "image_expected_text_received" };
     }
+    /**
+     * Texto en un nodo de opciones: antes caia en `ignored_not_text_node` y el bot
+     * no contestaba nada. Es frecuente que la persona escriba "1" o el nombre de
+     * la opcion en vez de tocar el boton, y quedaba esperando sin saber por que.
+     *
+     * Mismo criterio que `image_input`: se avisa y se vuelven a mostrar las
+     * opciones. No se interpreta el texto para elegir por ella: "1" puede ser
+     * la primera opcion o una cantidad, y elegir mal es peor que volver a
+     * preguntar.
+     */
+    if (currentNode.node_type === "buttons" || currentNode.node_type === "list") {
+      const yaAvisado = await choiceReminderSentRecently(state.id, currentNode.node_code);
+      if (yaAvisado) {
+        console.info("[flow-runtime]", "choice_reminder_suppressed", {
+          conversation_id: state.id,
+          node_code: currentNode.node_code,
+        });
+        return { ok: true, status: "choice_reminder_suppressed" };
+      }
+
+      const sendCtx = await getConversationSendContext(state.id);
+      const send = await flowSendText(sendCtx, CHOICE_REMINDER_TEXT);
+      if (send.ok) {
+        await persistOutgoingMessage({
+          conversation: state,
+          content: CHOICE_REMINDER_TEXT,
+          messageType: "text",
+          waMessageId: send.waMessageId,
+          raw: send.raw,
+          senderType: "system",
+          automationSource: "flow_engine",
+        });
+      }
+
+      await insertFlowEvent({
+        empresaId: state.empresa_id,
+        conversationId: state.id,
+        flowCode: state.flow_code,
+        nodeCode: currentNode.node_code,
+        flowSessionId: state.active_flow_session_id,
+        eventType: "choice_expected_text_received",
+        payload: { text_value: textValue, node_type: currentNode.node_type },
+      });
+
+      // Vuelve a mostrar las opciones para que tenga los botones a mano.
+      await sendCurrentFlowNode({ conversationId: state.id });
+
+      return { ok: true, status: "choice_expected_text_received" };
+    }
+
     if (currentNode.node_type !== "text" || !currentNode.save_as_field?.trim()) {
       return { ok: true, status: "ignored_not_text_node" };
     }
