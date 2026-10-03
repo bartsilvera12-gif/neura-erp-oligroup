@@ -64,6 +64,18 @@ export function isModuleSlugGranted(routeSlug: string, grantedSlugs: Set<string>
 }
 
 /**
+ * Hermanos del stack omnicanal que NO deben mostrarse en el sidebar por el alias de
+ * `conversaciones`: para que aparezcan como ítem propio se exige el módulo real o el
+ * paquete `omnicanal`. El acceso por ruta (deep link) sigue rigiéndose por
+ * `isModuleSlugGranted` (un usuario con `conversaciones` puede abrir el link si lo recibe).
+ */
+const OMNICANAL_SIDEBAR_STRICT_SLUGS = new Set<string>([
+  "historial-omnicanal",
+  "conversaciones-finalizadas",
+  "monitoreo",
+]);
+
+/**
  * Acceso a un ítem del menú (super admin ve todo; resto según empresa_modulos ∩ usuario_modulos).
  */
 export function canAccessSidebarSlug(
@@ -73,6 +85,9 @@ export function canAccessSidebarSlug(
 ): boolean {
   if (esSuperAdmin) return true;
   if (slug === "dashboard") return grantedSlugs.has("dashboard");
+  if (OMNICANAL_SIDEBAR_STRICT_SLUGS.has(slug)) {
+    return grantedSlugs.has(slug) || grantedSlugs.has("omnicanal");
+  }
   return isModuleSlugGranted(slug, grantedSlugs);
 }
 
