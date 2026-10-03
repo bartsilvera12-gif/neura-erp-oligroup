@@ -1343,6 +1343,26 @@ export async function ensureSorteoOrderFromChat(
       .eq("empresa_id", input.empresaId);
   }
 
+  // El flujo captura ciudad/teléfono en chat_flow_data pero ni la RPC ni el insert directo
+  // los persisten en la fila `sorteo_entradas`. Se completan acá (post-creación) para que
+  // reimpresiones de ticket y el cupón térmico puedan leerlos desde la entrada.
+  const flowCiudad = (participant.ciudad || "").trim();
+  const flowTelefono = (flowData["telefono"] ?? flowData["celular"] ?? "").trim();
+  if (entradaId && (flowCiudad || flowTelefono)) {
+    const patch: Record<string, unknown> = {};
+    if (flowCiudad) patch.ciudad = flowCiudad;
+    if (flowTelefono) patch.telefono_contacto = flowTelefono;
+    try {
+      await dbForTenantTables
+        .from("sorteo_entradas")
+        .update(patch)
+        .eq("id", entradaId)
+        .eq("empresa_id", input.empresaId);
+    } catch {
+      /* no-fatal: el ticket igual funciona con los datos del flujo */
+    }
+  }
+
   return {
     ok: true,
     skipped: false,
