@@ -1,5 +1,9 @@
-/** Referencias OCR cortas o token genérico repetido en muchos comprobantes (ej. mismo dígito OCR en PY). */
-export const MIN_OCR_REF_LENGTH_FOR_STRONG_DUPLICATE = 12;
+/**
+ * Largo mínimo del nro de comprobante/operación OCR para usarlo como bloqueo fuerte de duplicado.
+ * En PY los nros de comprobante de transferencia son típicamente de 8–13 dígitos (ej. Basa = 10).
+ * Umbral en 8: atrapa referencias reales sin confundir tokens cortos/genéricos (que además caen por blocklist).
+ */
+export const MIN_OCR_REF_LENGTH_FOR_STRONG_DUPLICATE = 8;
 
 const OCR_REF_STRONG_BLOCKLIST = new Set(
   [
