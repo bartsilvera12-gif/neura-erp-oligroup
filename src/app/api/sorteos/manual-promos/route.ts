@@ -26,13 +26,36 @@ export async function GET(request: NextRequest) {
     const empresaId = ctx.auth.empresa_id;
     const sb = await getChatServiceClientForEmpresa(empresaId);
 
-    /** Nodos interactivos activos de la empresa: de ahí cuelgan los botones con las promos. */
+    /**
+     * Solo flujos ACTIVOS: un flujo viejo/clonado (p. ej. de otro cliente) puede seguir con sus
+     * nodos `is_active=true` aunque el flujo esté desactivado, y sus combos no deben filtrarse acá.
+     */
+    const { data: flows, error: errFlows } = await sb
+      .from("chat_flows")
+      .select("flow_code")
+      .eq("empresa_id", empresaId)
+      .eq("activo", true);
+
+    if (errFlows) {
+      return NextResponse.json(errorResponse(errFlows.message), { status: 400 });
+    }
+
+    const activeFlowCodes = ((flows ?? []) as Array<{ flow_code?: unknown }>)
+      .map((f) => String(f.flow_code ?? "").trim())
+      .filter((code) => code.length > 0);
+
+    if (activeFlowCodes.length === 0) {
+      return NextResponse.json(successResponse([]));
+    }
+
+    /** Nodos interactivos activos de los flujos ACTIVOS: de ahí cuelgan los botones con las promos. */
     const { data: nodos, error: errNodos } = await sb
       .from("chat_flow_nodes")
-      .select("id, node_type, is_active")
+      .select("id, node_type, is_active, flow_code")
       .eq("empresa_id", empresaId)
       .eq("is_active", true)
-      .in("node_type", ["buttons", "list"]);
+      .in("node_type", ["buttons", "list"])
+      .in("flow_code", activeFlowCodes);
 
     if (errNodos) {
       return NextResponse.json(errorResponse(errNodos.message), { status: 400 });
