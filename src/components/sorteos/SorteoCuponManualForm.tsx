@@ -155,6 +155,7 @@ const EMPTY_FIELDS = {
   monto_total: "",
   observacion_interna: "",
   codigo_verificador: "",
+  metodo_pago: "efectivo",
 };
 
 export default function SorteoCuponManualForm({
@@ -309,6 +310,7 @@ export default function SorteoCuponManualForm({
           idempotency_key: idempotencyKey,
           codigo_verificador: form.codigo_verificador.trim() || null,
           promo_nombre: promoSel?.label ?? null,
+          metodo_pago: form.metodo_pago === "transferencia" ? "transferencia" : "efectivo",
         }),
       });
       const json = (await res.json()) as {
@@ -586,11 +588,15 @@ export default function SorteoCuponManualForm({
 
       <label className="flex flex-col gap-1 text-xs text-slate-600">
         Método de pago
-        <input
-          value="Efectivo"
-          readOnly
-          className="border border-slate-200 bg-slate-50 rounded px-3 py-2.5 text-base text-slate-700 sm:px-2 sm:py-2 sm:text-sm"
-        />
+        <select
+          name="metodo_pago"
+          value={form.metodo_pago}
+          onChange={onField}
+          className="border border-slate-300 rounded px-3 py-2.5 text-base text-slate-900 sm:px-2 sm:py-2 sm:text-sm"
+        >
+          <option value="efectivo">Efectivo</option>
+          <option value="transferencia">Transferencia</option>
+        </select>
       </label>
 
       <label className="flex flex-col gap-1 text-xs text-slate-600">

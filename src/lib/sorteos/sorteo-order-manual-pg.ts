@@ -50,6 +50,8 @@ export type SorteoManualCashInput = {
   codigoVerificador?: string | null;
   /** Nombre de la promo elegida (mismo botón que ofrece el bot), para trazar el precio cobrado. */
   promoNombre?: string | null;
+  /** Método de pago de la venta manual (efectivo | transferencia). Por defecto "efectivo". */
+  metodoPago?: "efectivo" | "transferencia";
 };
 
 export type SorteoManualCashFail = { ok: false; message: string };
@@ -84,7 +86,7 @@ function mapRowToOk(
 }
 
 /**
- * Crea orden confirmada en efectivo (mostrador). No escribe chat_flow_data ni mensajes.
+ * Crea orden manual confirmada (efectivo o transferencia). No escribe chat_flow_data ni mensajes.
  */
 export async function createSorteoManualCashSaleViaDirectPostgres(
   input: SorteoManualCashInput
@@ -301,6 +303,9 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
     const ultCupon = Number(s.ultimo_numero_cupon);
     const nowIso = new Date().toISOString();
 
+    const metodoPago = input.metodoPago === "transferencia" ? "transferencia" : "efectivo";
+    const bancoOrigen = metodoPago === "transferencia" ? "TRANSFERENCIA" : "EFECTIVO";
+
     const rowEnt: Record<string, unknown> = {
       empresa_id: input.empresaId,
       sorteo_id: input.sorteoId,
@@ -315,7 +320,7 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
       estado_pago: "confirmado",
       fecha_pago: nowIso,
       monto_pagado: montoRounded,
-      banco_origen: "EFECTIVO",
+      banco_origen: bancoOrigen,
       comprobante_url: null,
       validado_por: "erp_manual_presencial",
       numero_orden: numeroOrden,
@@ -344,7 +349,7 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
       rowEnt.venta_canal = "local";
     }
     if (entCols.has("pago_metodo")) {
-      rowEnt.pago_metodo = "efectivo";
+      rowEnt.pago_metodo = metodoPago;
     }
     if (revendedor && entCols.has("revendedor_id")) {
       rowEnt.revendedor_id = revendedor.id;
