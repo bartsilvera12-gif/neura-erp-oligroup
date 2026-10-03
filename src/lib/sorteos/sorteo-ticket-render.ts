@@ -711,6 +711,7 @@ export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Pro
   const CLOVER_OFF = 14;
 
   // ===== Baselines de texto =====
+  const Y_NOMBRE = 690;
   const Y_META = 740;
   const Y_EDICION = 820;
   const Y_NRO = 930;
@@ -721,6 +722,7 @@ export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Pro
   const doc = (input.documento ?? "").trim();
   const ciudad = (input.ciudad ?? "").trim();
   const tel = (input.telefono ?? "").trim();
+  const nombre = (input.clienteNombre ?? "").trim();
   const sorteoNombre = (input.sorteoNombre ?? "").trim();
   const nro = String(input.cupones[0] ?? input.numeroOrden ?? "").trim();
 
@@ -749,6 +751,18 @@ export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Pro
   const precio = formatPrecioGs(input.precioGs);
 
   const texts: string[] = [];
+  if (nombre) {
+    texts.push(
+      svgTextAsPath({
+        text: `NOMBRE: ${nombre}`,
+        x: LEFT_X,
+        y: Y_NOMBRE,
+        fontSize: 36,
+        weight: 700,
+        fill: INK,
+      })
+    );
+  }
   texts.push(
     svgTextAsPath({
       text: `CI: ${doc}  |  CIUDAD: ${ciudad}  |  Cel: ${tel}`,
