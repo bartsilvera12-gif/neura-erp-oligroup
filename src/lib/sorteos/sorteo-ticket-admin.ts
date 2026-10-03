@@ -67,15 +67,21 @@ export async function flowDataStubFromEntrada(
 ): Promise<Record<string, string>> {
   const { data: ent } = await sb
     .from("sorteo_entradas")
-    .select("nombre_participante, documento, whatsapp_numero")
+    .select("nombre_participante, documento, whatsapp_numero, ciudad")
     .eq("id", entradaId)
     .maybeSingle();
-  const r = ent as { nombre_participante?: string; documento?: string | null; whatsapp_numero?: string } | null;
+  const r = ent as {
+    nombre_participante?: string;
+    documento?: string | null;
+    whatsapp_numero?: string;
+    ciudad?: string | null;
+  } | null;
   return {
     nombre_completo: (r?.nombre_participante ?? "").trim(),
     documento: (r?.documento ?? "").trim(),
     telefono: (r?.whatsapp_numero ?? "").trim(),
     celular: (r?.whatsapp_numero ?? "").trim(),
+    ciudad: (r?.ciudad ?? "").trim(),
   };
 }
 
@@ -84,6 +90,7 @@ export type SorteoTicketEntradaDbSnapshot = {
   clienteNombre: string;
   documento: string;
   telefono: string;
+  ciudad: string;
   numeroOrdenStr: string;
   cupones: string[];
   sorteoNombre: string;
@@ -101,7 +108,7 @@ export async function loadSorteoTicketEntradaDbSnapshot(
   let q = sb
     .from("sorteo_entradas")
     .select(
-      "id, empresa_id, sorteo_id, numero_orden, nombre_participante, documento, whatsapp_numero"
+      "id, empresa_id, sorteo_id, numero_orden, nombre_participante, documento, whatsapp_numero, ciudad"
     )
     .eq("id", entradaId);
   if (empresaId?.trim()) {
@@ -123,6 +130,7 @@ export async function loadSorteoTicketEntradaDbSnapshot(
     nombre_participante?: string | null;
     documento?: string | null;
     whatsapp_numero?: string | null;
+    ciudad?: string | null;
   };
 
   const cupones = ((cups ?? []) as { numero_cupon?: string | number | null }[])
@@ -140,6 +148,7 @@ export async function loadSorteoTicketEntradaDbSnapshot(
     clienteNombre: String(enc.nombre_participante ?? "").trim(),
     documento: String(enc.documento ?? "").trim(),
     telefono: String(enc.whatsapp_numero ?? "").trim(),
+    ciudad: String(enc.ciudad ?? "").trim(),
     numeroOrdenStr,
     cupones,
     sorteoNombre: String((sorteo as { nombre?: string } | null)?.nombre ?? "").trim(),

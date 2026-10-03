@@ -141,10 +141,20 @@ function telefonoFromFlow(flowData: Record<string, string>): string {
   );
 }
 
+function ciudadFromFlow(flowData: Record<string, string>): string {
+  return (
+    norm(flowData["ciudad"]) ||
+    norm(flowData["localidad"]) ||
+    norm(flowData["ubicacion"]) ||
+    ""
+  );
+}
+
 export type SorteoTicketNormalizedRenderFields = {
   clienteNombre: string;
   documento: string;
   telefono: string;
+  ciudad: string;
   numeroOrden: string;
   sorteoNombre: string;
   cupones: string[];
@@ -252,6 +262,7 @@ export function buildSorteoTicketRenderData(input: {
   ).trim();
   const documento = (entradaDb?.documento?.trim() || documentoFromFlow(flowData)).trim();
   const telefono = (entradaDb?.telefono?.trim() || telefonoFromFlow(flowData)).trim();
+  const ciudad = (entradaDb?.ciudad?.trim() || ciudadFromFlow(flowData)).trim();
 
   const sourceUsed: SorteoTicketRenderSourceUsed = entradaDb
     ? "entrada_db"
@@ -269,6 +280,7 @@ export function buildSorteoTicketRenderData(input: {
     clienteNombre,
     documento,
     telefono,
+    ciudad,
     numeroOrden,
     sorteoNombre,
     cupones,
@@ -289,6 +301,7 @@ export function buildSorteoTicketRenderLogPayload(input: {
     clienteNombre: Boolean(f.clienteNombre.trim()),
     documento: Boolean(f.documento.trim()),
     telefono: Boolean(f.telefono.trim()),
+    ciudad: Boolean(f.ciudad.trim()),
     sorteoNombre: Boolean(f.sorteoNombre.trim()),
   };
 }

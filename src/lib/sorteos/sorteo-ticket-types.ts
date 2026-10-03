@@ -2,8 +2,8 @@
 
 export type SorteoTicketDeliveryMode = "text_only" | "text_and_image" | "image_only";
 
-/** Render: SVG automático vs imagen base subida + texto encima */
-export type SorteoTicketDesignMode = "auto" | "custom_template";
+/** Render: SVG automático vs imagen base subida + texto encima vs cupón OLI GROUP */
+export type SorteoTicketDesignMode = "auto" | "custom_template" | "cupon_oligroup";
 
 /** Posición de un campo dinámico sobre plantilla personalizada (coords px en imagen base). */
 export type SorteoTicketCustomFieldLayout = {
@@ -42,6 +42,8 @@ export type SorteoTicketImageConfig = {
   caption?: string;
   /** Pie legal / texto informativo */
   legalFooter?: string;
+  /** Destino que codifica el QR del cupón (p. ej. wa.me del WhatsApp del sorteo). */
+  qr_url?: string;
   /** Último asset de logo subido (bucket + path en Storage) */
   logo_storage_bucket?: string;
   logo_storage_path?: string;

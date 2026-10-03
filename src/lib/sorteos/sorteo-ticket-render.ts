@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
+import QRCode from "qrcode";
 import {
   mergeCustomTemplateFields,
   type SorteoTicketImageConfig,
@@ -15,6 +16,10 @@ export type SorteoTicketRenderInput = {
   telefono?: string;
   numeroOrden: string;
   cupones: string[];
+  /** Ciudad/localidad del participante (modo cupon_oligroup) */
+  ciudad?: string;
+  /** Precio del boleto en Gs. (modo cupon_oligroup) */
+  precioGs?: number | string;
   /** ISO o texto localizable */
   fechaHora: string;
   config: SorteoTicketImageConfig;
@@ -645,10 +650,194 @@ export async function renderSorteoTicketPng(svg: string): Promise<{ png: Buffer;
   return { png, hash };
 }
 
+/** Fecha d/m/aa; si `raw` no parsea como Date, se devuelve el texto crudo. */
+function formatFechaDmyShort(raw: string): string {
+  const s = (raw ?? "").trim();
+  if (!s) return "";
+  const d = new Date(s);
+  if (!Number.isNaN(d.getTime())) {
+    const dd = d.getDate();
+    const mm = d.getMonth() + 1;
+    const yy = String(d.getFullYear()).slice(-2);
+    return `${dd}/${mm}/${yy}`;
+  }
+  return s;
+}
+
+/** Miles con separador '.' (10000 -> "10.000"). */
+function formatThousandsDot(n: number): string {
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(Math.round(n));
+  return sign + String(abs).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+/** Precio en Gs formateado, o "" si falta/está vacío (línea se omite). */
+function formatPrecioGs(precio: number | string | undefined): string {
+  if (precio === undefined) return "";
+  const raw = String(precio).trim();
+  if (!raw) return "";
+  const n = Number(raw);
+  if (Number.isFinite(n)) return formatThousandsDot(n);
+  return raw;
+}
+
+/**
+ * Modo cupón OLI GROUP: comprobante vertical 1080×1350 con logo, QR, trébol y datos.
+ * Todo el texto va como `<path>` (el renderer PNG/librsvg no tiene fuentes del sistema).
+ */
+export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Promise<string> {
+  // ===== Lienzo =====
+  const W = 1080;
+  const H = 1350;
+  const BG = "#fefefe";
+  const INK = "#111827";
+  const LEFT_X = 72;
+
+  // ===== Logo =====
+  const LOGO_X = 60;
+  const LOGO_Y = 70;
+  const LOGO_W = 430;
+  const LOGO_H = 320;
+
+  // ===== QR =====
+  const QR_X = 690;
+  const QR_Y = 95;
+  const QR_SIZE = 300;
+
+  // ===== Trébol (4 hojas) =====
+  const CLOVER_CX = 540;
+  const CLOVER_CY = 498;
+  const CLOVER_R = 17;
+  const CLOVER_OFF = 14;
+
+  // ===== Baselines de texto =====
+  const Y_META = 740;
+  const Y_EDICION = 820;
+  const Y_NRO = 930;
+  const Y_FECHA = 1040;
+  const Y_PRECIO = 1090;
+  const Y_GRACIAS = 1240;
+
+  const doc = (input.documento ?? "").trim();
+  const ciudad = (input.ciudad ?? "").trim();
+  const tel = (input.telefono ?? "").trim();
+  const sorteoNombre = (input.sorteoNombre ?? "").trim();
+  const nro = String(input.cupones[0] ?? input.numeroOrden ?? "").trim();
+
+  // Logo embebido (si hay bytes)
+  let logoSvg = "";
+  if (input.logoBytes && input.logoMime) {
+    const href = dataUrlFromBuffer(input.logoBytes, input.logoMime);
+    logoSvg = `<image href="${href}" x="${LOGO_X}" y="${LOGO_Y}" width="${LOGO_W}" height="${LOGO_H}" preserveAspectRatio="xMidYMid meet"/>`;
+  }
+
+  // QR → data URL PNG embebido
+  const qrText = input.config.qr_url?.trim() || "https://wa.me/595973733044";
+  const qrDataUrl = await QRCode.toDataURL(qrText, { margin: 1, width: QR_SIZE });
+  const qrSvg = `<image href="${qrDataUrl}" x="${QR_X}" y="${QR_Y}" width="${QR_SIZE}" height="${QR_SIZE}"/>`;
+
+  // Trébol negro de 4 hojas + tallo pequeño
+  const stemTop = CLOVER_CY + CLOVER_OFF + CLOVER_R;
+  const cloverSvg = `<circle cx="${CLOVER_CX}" cy="${CLOVER_CY - CLOVER_OFF}" r="${CLOVER_R}" fill="${INK}"/>
+  <circle cx="${CLOVER_CX}" cy="${CLOVER_CY + CLOVER_OFF}" r="${CLOVER_R}" fill="${INK}"/>
+  <circle cx="${CLOVER_CX - CLOVER_OFF}" cy="${CLOVER_CY}" r="${CLOVER_R}" fill="${INK}"/>
+  <circle cx="${CLOVER_CX + CLOVER_OFF}" cy="${CLOVER_CY}" r="${CLOVER_R}" fill="${INK}"/>
+  <path d="M${CLOVER_CX} ${stemTop} Q ${CLOVER_CX + 6} ${stemTop + 12} ${CLOVER_CX} ${stemTop + 22}" stroke="${INK}" stroke-width="5" fill="none"/>`;
+
+  // Fecha d/m/aa y precio Gs
+  const fecha = formatFechaDmyShort(input.fechaHora);
+  const precio = formatPrecioGs(input.precioGs);
+
+  const texts: string[] = [];
+  texts.push(
+    svgTextAsPath({
+      text: `CI: ${doc}  |  CIUDAD: ${ciudad}  |  Cel: ${tel}`,
+      x: LEFT_X,
+      y: Y_META,
+      fontSize: 33,
+      weight: 400,
+      fill: INK,
+    })
+  );
+  texts.push(
+    svgTextAsPath({
+      text: `EDICIÓN: ${sorteoNombre.toUpperCase()}`,
+      x: LEFT_X,
+      y: Y_EDICION,
+      fontSize: 34,
+      weight: 600,
+      fill: INK,
+    })
+  );
+  texts.push(
+    svgTextAsPath({
+      text: `NRO: ${nro}`,
+      x: LEFT_X,
+      y: Y_NRO,
+      fontSize: 92,
+      weight: 800,
+      fill: INK,
+    })
+  );
+  texts.push(
+    svgTextAsPath({
+      text: `FECHA: ${fecha}`,
+      x: LEFT_X,
+      y: Y_FECHA,
+      fontSize: 30,
+      weight: 400,
+      fill: INK,
+    })
+  );
+  if (precio) {
+    texts.push(
+      svgTextAsPath({
+        text: `${precio} Gs.`,
+        x: LEFT_X,
+        y: Y_PRECIO,
+        fontSize: 30,
+        weight: 400,
+        fill: INK,
+      })
+    );
+  }
+  texts.push(
+    svgTextAsPath({
+      text: "¡Gracias por tu compra!",
+      x: W / 2,
+      y: Y_GRACIAS,
+      fontSize: 34,
+      weight: 600,
+      fill: INK,
+      textAnchor: "middle",
+    })
+  );
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+  <rect width="${W}" height="${H}" fill="${BG}"/>
+  ${logoSvg}
+  ${qrSvg}
+  ${cloverSvg}
+  ${texts.filter(Boolean).join("\n  ")}
+</svg>`;
+}
+
 /**
  * Punto único: plantilla personalizada (imagen + texto) o automático (SVG premium).
  */
 export async function renderTicketPngUnified(input: SorteoTicketRenderInput): Promise<{ png: Buffer; hash: string }> {
+  if (input.config.design_mode === "cupon_oligroup") {
+    try {
+      const svg = await buildOligroupCuponSvg(input);
+      return renderSorteoTicketPng(svg);
+    } catch (e) {
+      console.warn("[sorteo-ticket-render] cupon_oligroup_failed_fallback_auto", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
   const hasTemplate =
     input.templateBytes && input.templateBytes.length > 0 && input.templateMime;
   if (hasTemplate) {

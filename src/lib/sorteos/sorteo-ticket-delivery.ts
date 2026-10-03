@@ -71,19 +71,22 @@ async function loadSorteoRowForTicket(input: {
   nombre: string;
   ticket_delivery_mode: SorteoTicketDeliveryMode | undefined;
   ticket_image_config: unknown;
+  precio_por_boleto?: number;
 } | null> {
   const { data, error } = await input.supabase
     .from("sorteos")
-    .select("id, nombre, ticket_delivery_mode, ticket_image_config")
+    .select("id, nombre, ticket_delivery_mode, ticket_image_config, precio_por_boleto")
     .eq("id", input.sorteoId)
     .maybeSingle();
   if (!error && data) {
+    const precioNum = Number((data as { precio_por_boleto?: number | string | null }).precio_por_boleto);
     return {
       nombre: String((data as { nombre?: string }).nombre ?? "").trim(),
       ticket_delivery_mode: (data as { ticket_delivery_mode?: string }).ticket_delivery_mode as
         | SorteoTicketDeliveryMode
         | undefined,
       ticket_image_config: (data as { ticket_image_config?: unknown }).ticket_image_config,
+      precio_por_boleto: Number.isFinite(precioNum) ? precioNum : undefined,
     };
   }
   const schema = await fetchDataSchemaForEmpresaId(input.empresaId);
@@ -412,8 +415,12 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
       clienteNombre: normalized.clienteNombre.trim() || undefined,
       documento: normalized.documento.trim() || undefined,
       telefono: normalized.telefono.trim() || undefined,
+      ciudad: normalized.ciudad,
       numeroOrden: (normalized.numeroOrden || "").trim() || String(orderResult.numeroOrden),
       cupones: normalized.cupones,
+      ...(typeof sorteoRow.precio_por_boleto === "number" && sorteoRow.precio_por_boleto > 0
+        ? { precioGs: sorteoRow.precio_por_boleto }
+        : {}),
       fechaHora,
       config,
       logoBytes: logoDl?.bytes ?? null,
