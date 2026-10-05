@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import type {
   EntradaImpresionContext,
@@ -129,6 +130,58 @@ const SHARED_COUPON_CARD_CSS = `
   }
 `;
 
+/** Branding opcional para la impresión térmica (logo + QR del sorteo), ya como data URLs. */
+export type ThermalPrintBranding = {
+  /** Logo incrustado (base64), servido por el backend. */
+  logoDataUrl: string | null;
+  /** QR incrustado (base64), generado en el cliente. */
+  qrDataUrl: string | null;
+};
+
+/** Trébol de la suerte (igual que la referencia de OLI GROUP), en SVG para que imprima nítido. */
+const OLI_CLOVER_SVG = `<svg class="oli-clover-svg" viewBox="0 0 48 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g fill="#111"><circle cx="18" cy="18" r="8.5"/><circle cx="30" cy="18" r="8.5"/><circle cx="18" cy="30" r="8.5"/><circle cx="30" cy="30" r="8.5"/></g><path d="M24 31 C23 42 20 48 14 54" stroke="#111" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>`;
+
+function formatGs(n: number): string {
+  try {
+    return new Intl.NumberFormat("es-PY").format(Math.round(n));
+  } catch {
+    return String(Math.round(n));
+  }
+}
+
+/**
+ * Tarjeta térmica con el formato OLI GROUP (logo, QR, trébol, CI/ciudad/tel, edición,
+ * número destacado, fecha, valor y agradecimiento). Solo se usa en la impresión manual térmica.
+ */
+function renderThermalCouponInner(row: PhysicalCouponPrintRow, branding: ThermalPrintBranding): string {
+  // Logo/QR se pintan como background-image (inyectado una sola vez en el <style>), no como <img> por cupón.
+  const logo = branding.logoDataUrl ? `<span class="oli-logo" role="img" aria-label="Logo"></span>` : "";
+  const qr = branding.qrDataUrl ? `<span class="oli-qr" role="img" aria-label="QR"></span>` : "";
+  const head = logo || qr ? `<div class="oli-head">${logo}${qr}</div>` : "";
+
+  const metaParts: string[] = [];
+  if (row.documento) metaParts.push(`CI: ${escapeHtml(row.documento)}`);
+  if (row.ciudad) metaParts.push(`CIUDAD: ${escapeHtml(row.ciudad)}`);
+  if (row.whatsapp) metaParts.push(`Cel: ${escapeHtml(row.whatsapp)}`);
+  const meta = metaParts.length ? `<p class="oli-meta">${metaParts.join(" | ")}</p>` : "";
+
+  const fechaSolo = escapeHtml(String(row.fecha_display).split(",")[0].trim());
+  const valor =
+    row.precio_boleto != null
+      ? `<p class="oli-valor">${escapeHtml(formatGs(row.precio_boleto))} Gs.</p>`
+      : "";
+
+  return `
+    ${head}
+    ${OLI_CLOVER_SVG}
+    ${meta}
+    <p class="oli-edicion">EDICIÓN: ${escapeHtml(row.sorteo_nombre)}</p>
+    <p class="oli-nro">NRO: <strong>${escapeHtml(row.numero_cupon)}</strong></p>
+    <p class="oli-fecha">FECHA: ${fechaSolo}</p>
+    ${valor}
+    <p class="oli-gracias">¡Gracias por tu compra!</p>`;
+}
+
 function buildSheetBody(rows: PhysicalCouponPrintRow[], layout: FormatLayout): string {
   const perPage = layout.cols * layout.rows;
   const pages = chunk(rows, perPage);
@@ -146,15 +199,29 @@ function buildSheetBody(rows: PhysicalCouponPrintRow[], layout: FormatLayout): s
     .join("");
 }
 
-export function buildThermalBody(rows: PhysicalCouponPrintRow[], cutEachCoupon: boolean): string {
-  const cls = cutEachCoupon ? "coupon-card coupon-card--cut" : "coupon-card";
+export function buildThermalBody(
+  rows: PhysicalCouponPrintRow[],
+  cutEachCoupon: boolean,
+  branding?: ThermalPrintBranding
+): string {
+  // Diseño OLI GROUP solo cuando el caller pasa branding (impresión manual). El resto (TicketConfirmacionModal) usa el diseño clásico.
+  const useOli = branding !== undefined;
+  const base = useOli ? "coupon-card coupon-card--oli" : "coupon-card";
+  const cls = cutEachCoupon ? `${base} coupon-card--cut` : base;
   const articles = rows
-    .map((row) => `<article class="${cls}">${renderCouponInner(row)}</article>`)
+    .map(
+      (row) =>
+        `<article class="${cls}">${useOli ? renderThermalCouponInner(row, branding) : renderCouponInner(row)}</article>`
+    )
     .join("");
   return `<section class="thermal-ticket-list">${articles}</section>`;
 }
 
-export function buildFormatCss(format: PrintFormat, cutEachCoupon: boolean): string {
+export function buildFormatCss(
+  format: PrintFormat,
+  cutEachCoupon: boolean,
+  includeBrandingCss = false
+): string {
   const layout = FORMAT_LAYOUTS[format];
 
   if (layout.kind === "thermal") {
@@ -178,6 +245,37 @@ export function buildFormatCss(format: PrintFormat, cutEachCoupon: boolean): str
       }
       `
       : "";
+
+    // Diseño OLI GROUP (logo + QR + trébol + ciudad + valor + agradecimiento). Solo impresión manual.
+    const is58 = format === "thermal_58";
+    const logoH = is58 ? "40px" : "54px";
+    const qrH = is58 ? "42px" : "56px";
+    const cloverH = is58 ? "20px" : "26px";
+    const metaSize = is58 ? "11px" : "13px";
+    const edicionSize = is58 ? "12px" : "15px";
+    const nroSize = is58 ? "30px" : "40px";
+    const fechaSize = is58 ? "11px" : "13px";
+    const valorSize = is58 ? "16px" : "19px";
+    const graciasSize = is58 ? "12px" : "14px";
+    const brandingCss = includeBrandingCss
+      ? `
+      .coupon-card--oli { text-align: center; }
+      .oli-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; margin-bottom: 4px; }
+      .oli-logo { display: inline-block; height: ${logoH}; width: 58%; background-repeat: no-repeat; background-position: left center; background-size: contain; }
+      .oli-qr { display: inline-block; height: ${qrH}; width: ${qrH}; flex: 0 0 auto; background-repeat: no-repeat; background-position: right center; background-size: contain; }
+      .oli-logo:only-child { width: 70%; margin: 0 auto; background-position: center; }
+      .oli-qr:only-child { margin: 0 auto; background-position: center; }
+      .oli-clover-svg { height: ${cloverH}; width: auto; display: block; margin: 2px auto 4px; }
+      .oli-meta { font-size: ${metaSize}; color: #000 !important; font-weight: 600; margin: 2px 0; word-break: break-word; }
+      .oli-edicion { font-size: ${edicionSize}; color: #000 !important; font-weight: 700; text-transform: uppercase; margin: 3px 0; }
+      .oli-nro { font-size: ${nroSize}; color: #000 !important; font-weight: 900; line-height: 1.05; margin: 4px 0; font-variant-numeric: tabular-nums; }
+      .oli-nro strong { font-weight: 900; }
+      .oli-fecha { font-size: ${fechaSize}; color: #000 !important; margin: 2px 0; }
+      .oli-valor { font-size: ${valorSize}; color: #000 !important; font-weight: 800; margin: 3px 0; }
+      .oli-gracias { font-size: ${graciasSize}; color: #000 !important; font-style: italic; margin-top: 6px; }
+      `
+      : "";
+
     return `
       @page { size: ${widthMm}mm auto; margin: ${marginMm}mm; }
       ${SHARED_COUPON_CARD_CSS}
@@ -220,6 +318,7 @@ export function buildFormatCss(format: PrintFormat, cutEachCoupon: boolean): str
       .coupon-nombre.muted { color: #000 !important; }
       .coupon-fecha { color: #000 !important; }
       ${cutCss}
+      ${brandingCss}
     `;
   }
 
@@ -249,12 +348,24 @@ function buildPhysicalCouponsPrintDocument(
   rows: PhysicalCouponPrintRow[],
   documentTitle: string,
   format: PrintFormat,
-  cutEachCoupon: boolean
+  cutEachCoupon: boolean,
+  branding?: ThermalPrintBranding
 ): string {
   const layout = FORMAT_LAYOUTS[format];
+  const useBranding = layout.kind === "thermal" && branding !== undefined;
   const body =
-    layout.kind === "thermal" ? buildThermalBody(rows, cutEachCoupon) : buildSheetBody(rows, layout);
-  const css = buildFormatCss(format, cutEachCoupon);
+    layout.kind === "thermal"
+      ? buildThermalBody(rows, cutEachCoupon, branding)
+      : buildSheetBody(rows, layout);
+  // Logo/QR como background-image, definidos UNA sola vez (no por cupón) para no inflar el HTML.
+  const brandingImgParts: string[] = [];
+  if (useBranding && branding?.logoDataUrl) {
+    brandingImgParts.push(`.oli-logo{background-image:url("${branding.logoDataUrl}");}`);
+  }
+  if (useBranding && branding?.qrDataUrl) {
+    brandingImgParts.push(`.oli-qr{background-image:url("${branding.qrDataUrl}");}`);
+  }
+  const css = buildFormatCss(format, cutEachCoupon, useBranding) + brandingImgParts.join("");
 
   return `<!DOCTYPE html>
 <html lang="es">
@@ -302,6 +413,8 @@ function CouponCard({ row }: { row: PhysicalCouponPrintRow }) {
 export default function PhysicalCouponsPrintClient({
   sorteoId,
   sorteoNombre,
+  logoDataUrl = null,
+  qrUrl = null,
   rows,
   error,
   q,
@@ -317,6 +430,8 @@ export default function PhysicalCouponsPrintClient({
 }: {
   sorteoId: string;
   sorteoNombre: string;
+  logoDataUrl?: string | null;
+  qrUrl?: string | null;
   rows: PhysicalCouponPrintRow[];
   error: string | null;
   q: string;
@@ -339,6 +454,27 @@ export default function PhysicalCouponsPrintClient({
   const [confirmPending, setConfirmPending] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
   const [confirmOk, setConfirmOk] = useState(false);
+
+  // QR del sorteo (mismo destino que el ticket de WhatsApp) para la impresión térmica.
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const target = (qrUrl ?? "").trim();
+    if (!target) {
+      setQrDataUrl(null);
+      return;
+    }
+    QRCode.toDataURL(target, { margin: 1, width: 320, errorCorrectionLevel: "M" })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQrDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [qrUrl]);
 
   const modoEntrada = Boolean(entradaId && entradaContext);
   const modoBatch = Boolean(batchMode) && !modoEntrada;
@@ -404,7 +540,8 @@ export default function PhysicalCouponsPrintClient({
       rows,
       title,
       selectedPrintFormat,
-      isThermal && thermalCutEachCoupon
+      isThermal && thermalCutEachCoupon,
+      isThermal ? { logoDataUrl, qrDataUrl } : undefined
     );
     /* Sin noopener en features: si no, algunos navegadores devuelven null y no podemos llamar a print(). */
     const w = window.open("", "_blank");
