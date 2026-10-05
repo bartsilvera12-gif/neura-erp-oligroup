@@ -29,6 +29,13 @@ function stripAccents(s: string): string {
   return s.normalize("NFD").replace(/\p{M}/gu, "");
 }
 
+function nameTokens(s: string): string[] {
+  return normalizeBankText(s)
+    .split(/\s+/)
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 3);
+}
+
 /** Titular / alias: minúsculas, sin acentos, espacios colapsados. */
 export function normalizeBankText(s: string): string {
   return stripAccents(s.trim().toLowerCase()).replace(/\s+/g, " ").trim();
@@ -61,10 +68,15 @@ export function extractBankDetailsFromOcr(fullText: string): BankDetailsOcr {
 
   let numero_cuenta = "";
   const cuentaRe =
-    /(?:cuenta|n[°º]?\s*cuenta|c\/a|c\.?\s*a\.?|c\.?\s*c\.?|cta\.?|caja\s+de\s+ahorro|cuenta\s+corriente)\s*[:\s#.-]*([0-9][0-9\s.\-]{5,24})/i;
+    /(?:cuenta|n[°º]?\s*cuenta|c\/a|c\.?\s*a\.?|c\.?\s*c\.?|cta\.?|caja\s+de\s+ahorro|cuenta\s+corriente)\s*[:\s#.-]*((?:\*{2,}\s*)?[0-9][0-9\s.\-]{2,24})/i;
   const cm = t.match(cuentaRe);
   if (cm?.[1]) {
     numero_cuenta = normalizeBankAccountDigits(cm[1]);
+  }
+
+  if (!numero_cuenta) {
+    const masked = t.match(/\*{2,}\s*(\d{3,8})\b/);
+    if (masked?.[1]) numero_cuenta = masked[1];
   }
   if (!numero_cuenta || numero_cuenta.length < 6) {
     const runs = [...t.matchAll(/\b(\d{8,18})\b/g)];
@@ -76,13 +88,29 @@ export function extractBankDetailsFromOcr(fullText: string): BankDetailsOcr {
 
   let titular = "";
   const titRe =
-    /(?:titular|beneficiario|orden\s+de|a\s+nombre\s+de|a\s+favor\s+de|favor\s+de|destinatario)\s*[:\s#.-]+([^\n\r|]{3,100})/i;
+    /(?:titular|beneficiario|orden\s+de|a\s+nombre\s+de|a\s+favor\s+de|favor\s+de|destinatario|enviad[oa]\s+a)\s*[:\s#.-]+([^\n\r|]{3,100})/i;
   const tm = t.match(titRe);
   if (tm?.[1]) {
     titular = tm[1]
       .split(/[\n\r|]/)[0]
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  if (!titular) {
+    const lines = t
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (let i = 0; i < lines.length - 1; i++) {
+      if (/^(?:titular|beneficiario|destinatario|enviad[oa]\s+a)\s*[:#.-]*$/i.test(lines[i])) {
+        const candidate = lines[i + 1].replace(/\s+/g, " ").trim();
+        if (candidate.length >= 3 && candidate.length <= 100) {
+          titular = candidate;
+          break;
+        }
+      }
+    }
   }
 
   return { titular, numero_cuenta, alias };
@@ -104,13 +132,21 @@ function titularMatches(expected: string, ocr: string): boolean {
   const a = normalizeBankText(expected);
   const b = normalizeBankText(ocr);
   if (!a || !b) return false;
-  return a === b || a.includes(b) || b.includes(a);
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+
+  const aTokens = new Set(nameTokens(a));
+  const bTokens = new Set(nameTokens(b));
+  let shared = 0;
+  for (const token of aTokens) {
+    if (bTokens.has(token)) shared++;
+  }
+  return shared >= 2;
 }
 
 function cuentaMatches(expected: string, ocr: string): boolean {
   const a = normalizeBankAccountDigits(expected);
   const b = normalizeBankAccountDigits(ocr);
-  if (a.length < 4 || b.length < 4) return false;
+  if (a.length < 4 || b.length < 3) return false;
   return a === b || a.endsWith(b) || b.endsWith(a);
 }
 
@@ -170,7 +206,10 @@ function supplementBankDetailsFromFullText(
   const titExp = expected.titular.trim();
   if (titExp) {
     const nt = normalizeBankText(titExp);
-    const inText = nt.length >= 3 && mergedNorm.includes(nt);
+    const expectedTokens = nameTokens(nt);
+    const textTokens = new Set(nameTokens(mergedNorm));
+    const sharedTokens = expectedTokens.filter((token) => textTokens.has(token)).length;
+    const inText = (nt.length >= 3 && mergedNorm.includes(nt)) || sharedTokens >= 2;
     if (inText && (!out.titular || !titularMatches(titExp, out.titular))) {
       out.titular = titExp;
     }
