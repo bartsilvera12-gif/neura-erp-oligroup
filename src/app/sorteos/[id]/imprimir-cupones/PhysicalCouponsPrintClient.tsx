@@ -130,10 +130,11 @@ const SHARED_COUPON_CARD_CSS = `
   }
 `;
 
-/** Branding opcional para la impresión térmica (logo + QR del sorteo). */
+/** Branding opcional para la impresión térmica (logo + QR del sorteo), ya como data URLs. */
 export type ThermalPrintBranding = {
-  logoUrl: string | null;
-  /** data:image/png ya generado en el cliente. */
+  /** Logo incrustado (base64), servido por el backend. */
+  logoDataUrl: string | null;
+  /** QR incrustado (base64), generado en el cliente. */
   qrDataUrl: string | null;
 };
 
@@ -153,12 +154,9 @@ function formatGs(n: number): string {
  * número destacado, fecha, valor y agradecimiento). Solo se usa en la impresión manual térmica.
  */
 function renderThermalCouponInner(row: PhysicalCouponPrintRow, branding: ThermalPrintBranding): string {
-  const logo = branding.logoUrl
-    ? `<img class="oli-logo" src="${escapeHtml(branding.logoUrl)}" alt="Logo"/>`
-    : "";
-  const qr = branding.qrDataUrl
-    ? `<img class="oli-qr" src="${escapeHtml(branding.qrDataUrl)}" alt="QR"/>`
-    : "";
+  // Logo/QR se pintan como background-image (inyectado una sola vez en el <style>), no como <img> por cupón.
+  const logo = branding.logoDataUrl ? `<span class="oli-logo" role="img" aria-label="Logo"></span>` : "";
+  const qr = branding.qrDataUrl ? `<span class="oli-qr" role="img" aria-label="QR"></span>` : "";
   const head = logo || qr ? `<div class="oli-head">${logo}${qr}</div>` : "";
 
   const metaParts: string[] = [];
@@ -263,10 +261,10 @@ export function buildFormatCss(
       ? `
       .coupon-card--oli { text-align: center; }
       .oli-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; margin-bottom: 4px; }
-      .oli-logo { max-height: ${logoH}; max-width: 58%; object-fit: contain; }
-      .oli-qr { height: ${qrH}; width: ${qrH}; object-fit: contain; }
-      .oli-head:only-child { justify-content: center; }
-      .oli-head .oli-logo:only-child, .oli-head .oli-qr:only-child { margin: 0 auto; }
+      .oli-logo { display: inline-block; height: ${logoH}; width: 58%; background-repeat: no-repeat; background-position: left center; background-size: contain; }
+      .oli-qr { display: inline-block; height: ${qrH}; width: ${qrH}; flex: 0 0 auto; background-repeat: no-repeat; background-position: right center; background-size: contain; }
+      .oli-logo:only-child { width: 70%; margin: 0 auto; background-position: center; }
+      .oli-qr:only-child { margin: 0 auto; background-position: center; }
       .oli-clover-svg { height: ${cloverH}; width: auto; display: block; margin: 2px auto 4px; }
       .oli-meta { font-size: ${metaSize}; color: #000 !important; font-weight: 600; margin: 2px 0; word-break: break-word; }
       .oli-edicion { font-size: ${edicionSize}; color: #000 !important; font-weight: 700; text-transform: uppercase; margin: 3px 0; }
@@ -359,7 +357,15 @@ function buildPhysicalCouponsPrintDocument(
     layout.kind === "thermal"
       ? buildThermalBody(rows, cutEachCoupon, branding)
       : buildSheetBody(rows, layout);
-  const css = buildFormatCss(format, cutEachCoupon, useBranding);
+  // Logo/QR como background-image, definidos UNA sola vez (no por cupón) para no inflar el HTML.
+  const brandingImgParts: string[] = [];
+  if (useBranding && branding?.logoDataUrl) {
+    brandingImgParts.push(`.oli-logo{background-image:url("${branding.logoDataUrl}");}`);
+  }
+  if (useBranding && branding?.qrDataUrl) {
+    brandingImgParts.push(`.oli-qr{background-image:url("${branding.qrDataUrl}");}`);
+  }
+  const css = buildFormatCss(format, cutEachCoupon, useBranding) + brandingImgParts.join("");
 
   return `<!DOCTYPE html>
 <html lang="es">
@@ -407,7 +413,7 @@ function CouponCard({ row }: { row: PhysicalCouponPrintRow }) {
 export default function PhysicalCouponsPrintClient({
   sorteoId,
   sorteoNombre,
-  logoUrl = null,
+  logoDataUrl = null,
   qrUrl = null,
   rows,
   error,
@@ -424,7 +430,7 @@ export default function PhysicalCouponsPrintClient({
 }: {
   sorteoId: string;
   sorteoNombre: string;
-  logoUrl?: string | null;
+  logoDataUrl?: string | null;
   qrUrl?: string | null;
   rows: PhysicalCouponPrintRow[];
   error: string | null;
@@ -535,7 +541,7 @@ export default function PhysicalCouponsPrintClient({
       title,
       selectedPrintFormat,
       isThermal && thermalCutEachCoupon,
-      isThermal ? { logoUrl, qrDataUrl } : undefined
+      isThermal ? { logoDataUrl, qrDataUrl } : undefined
     );
     /* Sin noopener en features: si no, algunos navegadores devuelven null y no podemos llamar a print(). */
     const w = window.open("", "_blank");

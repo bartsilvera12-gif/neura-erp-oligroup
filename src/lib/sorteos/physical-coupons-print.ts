@@ -631,9 +631,9 @@ export async function fetchSorteoNombreForEmpresaServer(sorteoId: string): Promi
 }
 
 export type SorteoPrintBranding = {
-  /** URL pública del logo (reusa el configurado para el ticket de WhatsApp). */
-  logoUrl: string | null;
-  /** Destino del QR (mismo que el ticket de WhatsApp, p.ej. un wa.me). */
+  /** Logo ya incrustado como data URL (base64). Se baja del Storage para que imprima sin depender de la red. */
+  logoDataUrl: string | null;
+  /** Destino del QR (mismo que el ticket de WhatsApp, p.ej. un wa.me). El QR se genera en el cliente. */
   qrUrl: string | null;
 };
 
@@ -643,7 +643,7 @@ export type SorteoPrintBranding = {
  * Lectura pura; no modifica nada del ticket de WhatsApp.
  */
 export async function fetchSorteoPrintBrandingServer(sorteoId: string): Promise<SorteoPrintBranding> {
-  const empty: SorteoPrintBranding = { logoUrl: null, qrUrl: null };
+  const empty: SorteoPrintBranding = { logoDataUrl: null, qrUrl: null };
   const empresaId = await getEmpresaIdForCurrentUserServer();
   if (!empresaId) return empty;
 
@@ -683,18 +683,25 @@ export async function fetchSorteoPrintBrandingServer(sorteoId: string): Promise<
   const bucket = typeof cfg.logo_storage_bucket === "string" ? cfg.logo_storage_bucket.trim() : "";
   const path = typeof cfg.logo_storage_path === "string" ? cfg.logo_storage_path.trim() : "";
 
-  let logoUrl: string | null = null;
+  let logoDataUrl: string | null = null;
   if (showLogo && bucket && path) {
     try {
       const sb = await getChatServiceClientForEmpresa(empresaId);
-      const { data } = sb.storage.from(bucket).getPublicUrl(path);
-      logoUrl = data?.publicUrl ?? null;
+      const { data: blob, error: dlErr } = await sb.storage.from(bucket).download(path);
+      if (!dlErr && blob) {
+        const bytes = Buffer.from(await blob.arrayBuffer());
+        // Límite defensivo (~2MB) para no inflar el HTML de impresión.
+        if (bytes.length > 0 && bytes.length <= 2_000_000) {
+          const mime = blob.type && blob.type.startsWith("image/") ? blob.type : "image/png";
+          logoDataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
+        }
+      }
     } catch (e) {
-      console.error("[sorteos][physical-print]", "branding_logo_url", e);
+      console.error("[sorteos][physical-print]", "branding_logo_download", e);
     }
   }
 
-  return { logoUrl, qrUrl };
+  return { logoDataUrl, qrUrl };
 }
 
 export async function fetchPhysicalCouponsForPrintServer(

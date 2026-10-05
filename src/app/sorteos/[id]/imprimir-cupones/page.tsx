@@ -100,7 +100,7 @@ export default async function ImprimirCuponesSorteoPage({
     <PhysicalCouponsPrintClient
       sorteoId={sorteoId}
       sorteoNombre={sorteoNombre}
-      logoUrl={branding.logoUrl}
+      logoDataUrl={branding.logoDataUrl}
       qrUrl={branding.qrUrl}
       rows={result.data}
       error={result.error}
