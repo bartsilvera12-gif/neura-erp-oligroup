@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import {
   fetchPhysicalCouponsForPrintServer,
   fetchSorteoNombreForEmpresaServer,
+  fetchSorteoPrintBrandingServer,
   type EntradaImpresionContext,
 } from "@/lib/sorteos/physical-coupons-print";
 import type { SorteoEntradaEstadoPago } from "@/lib/sorteos/types";
@@ -68,6 +69,8 @@ export default async function ImprimirCuponesSorteoPage({
     notFound();
   }
 
+  const branding = await fetchSorteoPrintBrandingServer(sorteoId);
+
   const q = pickStr(sp, "q").trim();
   const estado = parseEstado(pickStr(sp, "estado"));
   const fechaDesde = pickStr(sp, "fecha_desde").trim();
@@ -97,6 +100,8 @@ export default async function ImprimirCuponesSorteoPage({
     <PhysicalCouponsPrintClient
       sorteoId={sorteoId}
       sorteoNombre={sorteoNombre}
+      logoUrl={branding.logoUrl}
+      qrUrl={branding.qrUrl}
       rows={result.data}
       error={result.error}
       q={q}

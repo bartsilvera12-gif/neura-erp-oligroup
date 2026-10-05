@@ -61,6 +61,10 @@ export type PhysicalCouponPrintRow = {
   documento: string | null;
   /** Teléfono completo (sin enmascarar): cupón físico operativo para urna/control interno. */
   whatsapp: string | null;
+  /** Ciudad del comprador (sorteo_entradas.ciudad). Solo se usa en la impresión térmica. Opcional: otros callers (TicketConfirmacionModal) no la proveen. */
+  ciudad?: string | null;
+  /** Precio por boleto del sorteo (sorteos.precio_por_boleto). Valor de la boleta en el ticket térmico. Opcional por el mismo motivo. */
+  precio_boleto?: number | null;
   /** Texto corto para la tarjeta: preferimos pago confirmado; si no hay, alta de la orden. */
   fecha_display: string;
 };
@@ -165,11 +169,18 @@ function mapRow(args: {
   nombre_participante: string;
   documento: string | null;
   whatsapp_numero: string;
+  ciudad: string | null;
+  precio_boleto: number | null;
   fecha_pago: string | null;
   entrada_created_at: string;
 }): PhysicalCouponPrintRow {
   const ref = fechaReferenciaEntrada(args.fecha_pago, args.entrada_created_at);
   const nom = args.nombre_participante?.trim() || null;
+  const ciudad = args.ciudad != null && String(args.ciudad).trim() ? String(args.ciudad).trim() : null;
+  const precio =
+    args.precio_boleto != null && Number.isFinite(Number(args.precio_boleto))
+      ? Number(args.precio_boleto)
+      : null;
   return {
     cupon_id: args.cupon_id,
     numero_cupon: args.numero_cupon,
@@ -178,6 +189,8 @@ function mapRow(args: {
     nombre_participante: nom,
     documento: normalizeDocumento(args.documento),
     whatsapp: normalizeWhatsapp(args.whatsapp_numero),
+    ciudad,
+    precio_boleto: precio,
     fecha_display: formatFechaDisplay(ref),
   };
 }
@@ -299,6 +312,8 @@ async function fetchPhysicalCouponsPgDirect(
       se.nombre_participante,
       se.documento,
       se.whatsapp_numero,
+      se.ciudad,
+      so.precio_por_boleto,
       se.fecha_pago,
       se.created_at AS entrada_created_at
     FROM ${tCup} c
@@ -328,6 +343,8 @@ async function fetchPhysicalCouponsPgDirect(
         nombre_participante: String(r.nombre_participante ?? ""),
         documento: r.documento != null ? String(r.documento) : null,
         whatsapp_numero: String(r.whatsapp_numero ?? ""),
+        ciudad: r.ciudad != null ? String(r.ciudad) : null,
+        precio_boleto: r.precio_por_boleto != null ? Number(r.precio_por_boleto) : null,
         fecha_pago: r.fecha_pago != null ? String(r.fecha_pago) : null,
         entrada_created_at: String(r.entrada_created_at ?? ""),
       })
@@ -361,12 +378,13 @@ async function fetchPhysicalCouponsPostgrest(
         nombre_participante,
         documento,
         whatsapp_numero,
+        ciudad,
         numero_orden,
         estado_pago,
         fecha_pago,
         created_at
       ),
-      sorteos!inner ( nombre )
+      sorteos!inner ( nombre, precio_por_boleto )
     `
     )
     .eq("empresa_id", empresaId)
@@ -434,6 +452,8 @@ async function fetchPhysicalCouponsPostgrest(
         nombre_participante: String(se.nombre_participante ?? ""),
         documento: se.documento != null ? String(se.documento) : null,
         whatsapp_numero: String(se.whatsapp_numero ?? ""),
+        ciudad: se.ciudad != null ? String(se.ciudad) : null,
+        precio_boleto: so.precio_por_boleto != null ? Number(so.precio_por_boleto) : null,
         fecha_pago: fechaPago,
         entrada_created_at: entradaCreated,
       })
@@ -608,6 +628,73 @@ export async function fetchSorteoNombreForEmpresaServer(sorteoId: string): Promi
     console.error("[sorteos][physical-print]", "sorteo_lookup", e);
     return null;
   }
+}
+
+export type SorteoPrintBranding = {
+  /** URL pública del logo (reusa el configurado para el ticket de WhatsApp). */
+  logoUrl: string | null;
+  /** Destino del QR (mismo que el ticket de WhatsApp, p.ej. un wa.me). */
+  qrUrl: string | null;
+};
+
+/**
+ * Logo + QR para la impresión térmica manual. Reusa `sorteos.ticket_image_config`
+ * (logo_storage_bucket/path, qr_url, showLogo) para no duplicar configuración.
+ * Lectura pura; no modifica nada del ticket de WhatsApp.
+ */
+export async function fetchSorteoPrintBrandingServer(sorteoId: string): Promise<SorteoPrintBranding> {
+  const empty: SorteoPrintBranding = { logoUrl: null, qrUrl: null };
+  const empresaId = await getEmpresaIdForCurrentUserServer();
+  if (!empresaId) return empty;
+
+  const dataSchema = await fetchDataSchemaForEmpresaId(empresaId);
+
+  let cfg: Record<string, unknown> | null = null;
+  try {
+    if (isLikelyUnexposedTenantChatSchema(dataSchema)) {
+      const pool = getChatPostgresPool();
+      if (!pool) return empty;
+      const sch = assertAllowedChatDataSchema(dataSchema);
+      const tSort = quoteSchemaTable(sch, "sorteos");
+      const res = await pool.query(
+        `SELECT ticket_image_config FROM ${tSort} WHERE id = $1::uuid AND empresa_id = $2::uuid LIMIT 1`,
+        [sorteoId, empresaId]
+      );
+      cfg = (res.rows?.[0]?.ticket_image_config as Record<string, unknown> | null) ?? null;
+    } else {
+      const sb = await getChatServiceClientForEmpresa(empresaId);
+      const { data } = await sb
+        .from("sorteos")
+        .select("ticket_image_config")
+        .eq("id", sorteoId)
+        .eq("empresa_id", empresaId)
+        .maybeSingle();
+      cfg = (data?.ticket_image_config as Record<string, unknown> | null) ?? null;
+    }
+  } catch (e) {
+    console.error("[sorteos][physical-print]", "branding_lookup", e);
+    return empty;
+  }
+
+  if (!cfg) return empty;
+
+  const qrUrl = typeof cfg.qr_url === "string" && cfg.qr_url.trim() ? cfg.qr_url.trim() : null;
+  const showLogo = cfg.showLogo !== false;
+  const bucket = typeof cfg.logo_storage_bucket === "string" ? cfg.logo_storage_bucket.trim() : "";
+  const path = typeof cfg.logo_storage_path === "string" ? cfg.logo_storage_path.trim() : "";
+
+  let logoUrl: string | null = null;
+  if (showLogo && bucket && path) {
+    try {
+      const sb = await getChatServiceClientForEmpresa(empresaId);
+      const { data } = sb.storage.from(bucket).getPublicUrl(path);
+      logoUrl = data?.publicUrl ?? null;
+    } catch (e) {
+      console.error("[sorteos][physical-print]", "branding_logo_url", e);
+    }
+  }
+
+  return { logoUrl, qrUrl };
 }
 
 export async function fetchPhysicalCouponsForPrintServer(
