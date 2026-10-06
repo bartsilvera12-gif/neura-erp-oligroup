@@ -41,8 +41,10 @@ export type SorteoManualCashInput = {
   apellido: string;
   cedula: string;
   telefono: string;
+  /** Ciudad del comprador. Opcional. */
+  ciudad?: string | null;
   cantidadBoletos: number;
-  /** Monto total informado por el operador (>= 0). */
+  /** Monto total informado por el operador (>= 0). El servidor recalcula total = precio × cantidad. */
   montoTotal: number;
   observacionInterna?: string | null;
   validadoPorUserId?: string | null;
@@ -260,18 +262,19 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
     }
 
     const precioBase = Number(s.precio_por_boleto);
-    const listaCalc = (Number.isFinite(precioBase) ? precioBase : 0) * qty;
-    let precioFuenteIns: "lista" | "promo";
-    let precioRegularRef: number | null = null;
-    if (montoRounded === listaCalc) {
-      precioFuenteIns = "lista";
-    } else {
-      precioFuenteIns = "promo";
-      precioRegularRef = listaCalc;
-    }
+    const listaCalc = Math.round((Number.isFinite(precioBase) ? precioBase : 0) * qty);
+    /**
+     * Venta manual: el total se calcula SIEMPRE por precio del sorteo × cantidad, para que el
+     * operador no cargue importes a mano. Si el sorteo no tiene precio configurado (0), caemos al
+     * monto informado como red de seguridad.
+     */
+    const montoFinal = listaCalc > 0 ? listaCalc : montoRounded;
+    const precioFuenteIns: "lista" | "promo" = montoFinal === listaCalc ? "lista" : "promo";
+    const precioRegularRef: number | null = precioFuenteIns === "promo" ? listaCalc : null;
 
     const wa = normalizeTelefonoSorteo(input.telefono);
     const ce = input.cedula.trim();
+    const ciudadVal = (input.ciudad ?? "").trim() || null;
 
     let clienteId: string | null = null;
     const deletedClause = cliCols.has("deleted_at") ? "AND deleted_at IS NULL" : "";
@@ -292,9 +295,9 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
       const insCli = await client.query<{ id: string }>(
         `INSERT INTO ${qsch}.clientes (
            empresa_id, tipo_cliente, nombre_contacto, nombre, documento, telefono, ciudad, origen
-         ) VALUES ($1, 'persona', $2, $2, $3, $4, NULL, 'SORTEO')
+         ) VALUES ($1, 'persona', $2, $2, $3, $4, $5, 'SORTEO')
          RETURNING id`,
-        [input.empresaId, nombreCompleto, ce || null, wa]
+        [input.empresaId, nombreCompleto, ce || null, wa, ciudadVal]
       );
       clienteId = insCli.rows[0]?.id ?? null;
     }
@@ -315,11 +318,11 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
       nombre_participante: nombreCompleto,
       documento: ce || null,
       cantidad_boletos: qty,
-      monto_total: montoRounded,
+      monto_total: montoFinal,
       moneda: "PYG",
       estado_pago: "confirmado",
       fecha_pago: nowIso,
-      monto_pagado: montoRounded,
+      monto_pagado: montoFinal,
       banco_origen: bancoOrigen,
       comprobante_url: null,
       validado_por: "erp_manual_presencial",
@@ -350,6 +353,9 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
     }
     if (entCols.has("pago_metodo")) {
       rowEnt.pago_metodo = metodoPago;
+    }
+    if (entCols.has("ciudad")) {
+      rowEnt.ciudad = ciudadVal;
     }
     if (revendedor && entCols.has("revendedor_id")) {
       rowEnt.revendedor_id = revendedor.id;

@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import TicketConfirmacionModal from "@/components/sorteos/TicketConfirmacionModal";
-import type { ManualPromo } from "@/lib/sorteos/manual-promos";
 
 /**
  * Única implementación del alta manual de cupones (venta presencial efectivo).
@@ -17,6 +16,8 @@ export type SorteoListItem = {
   nombre: string;
   estado?: string;
   ticket_delivery_mode?: string;
+  /** Precio unitario del boleto; se usa para calcular el total automáticamente. */
+  precio_por_boleto?: number | null;
 };
 
 type RespuestaSorteos = { success?: boolean; data?: SorteoListItem[]; error?: string };
@@ -95,42 +96,6 @@ export function useSorteosCuponManual(enabled: boolean) {
   return { sorteos, loadErr, loadingSorteos };
 }
 
-/**
- * Promos que ofrece el bot (GET /api/sorteos/manual-promos). El vendedor elige la misma
- * opción que vería el cliente en WhatsApp y de ahí salen cantidad y monto, en vez de
- * tipearlos: así no se cobran precios que no existen en el flujo.
- */
-export function usePromosCuponManual(enabled: boolean) {
-  const [promos, setPromos] = useState<ManualPromo[]>([]);
-  const [loadingPromos, setLoadingPromos] = useState(false);
-
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    (async () => {
-      setLoadingPromos(true);
-      try {
-        const res = await fetchWithSupabaseSession("/api/sorteos/manual-promos", {
-          cache: "no-store",
-        });
-        const json = (await res.json()) as { success?: boolean; data?: ManualPromo[] };
-        if (!cancelled && res.ok && json.success && Array.isArray(json.data)) {
-          setPromos(json.data);
-        }
-      } catch {
-        /* sin promos: el formulario cae a carga manual */
-      } finally {
-        if (!cancelled) setLoadingPromos(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled]);
-
-  return { promos, loadingPromos };
-}
-
 type Props = {
   sorteos: SorteoListItem[];
   sorteoId: string;
@@ -151,8 +116,8 @@ const EMPTY_FIELDS = {
   apellido: "",
   cedula: "",
   telefono: "",
+  ciudad: "",
   cantidad_boletos: "1",
-  monto_total: "",
   observacion_interna: "",
   codigo_verificador: "",
   metodo_pago: "efectivo",
@@ -201,16 +166,23 @@ export default function SorteoCuponManualForm({
     sorteoNombre: "",
   });
 
-  const { promos, loadingPromos } = usePromosCuponManual(true);
-  /** `""` = ninguna promo elegida todavía; `MANUAL` = carga libre de cantidad y monto. */
-  const [promoId, setPromoId] = useState("");
-  const promoSel = useMemo(() => promos.find((p) => p.id === promoId) ?? null, [promos, promoId]);
   /**
-   * Carga libre de cantidad y monto solo como red de seguridad: si el flujo del bot no tiene
-   * promos cargadas, la pantalla quedaría inutilizable. Con promas disponibles, el vendedor
-   * elige una — no hay opción de escribir un monto a mano.
+   * Venta manual: el operador carga la cantidad y el total se calcula solo (cantidad × precio del
+   * sorteo). No se usan promos: el monto no se escribe a mano.
    */
-  const modoManual = promos.length === 0;
+  const sorteoSel = useMemo(() => sorteos.find((s) => s.id === sorteoId) ?? null, [sorteos, sorteoId]);
+  const precioUnitario = useMemo(() => {
+    const p = Number(sorteoSel?.precio_por_boleto);
+    return Number.isFinite(p) && p > 0 ? p : 0;
+  }, [sorteoSel]);
+  const cantidadNum = useMemo(() => {
+    const n = Math.floor(Number(form.cantidad_boletos));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [form.cantidad_boletos]);
+  const totalCalculado = useMemo(
+    () => Math.round(precioUnitario * cantidadNum),
+    [precioUnitario, cantidadNum]
+  );
 
   useEffect(() => {
     setIdempotencyKey(crypto.randomUUID());
@@ -220,25 +192,7 @@ export default function SorteoCuponManualForm({
     setOkDeliveryId(null);
     setOkOrden(null);
     setTicketOpen(false);
-    setPromoId("");
   }, [resetSignal]);
-
-  /** Elegir promo completa cantidad y monto; el monto sin promo queda a cargo del vendedor. */
-  const onPromoChange = useCallback(
-    (id: string) => {
-      setPromoId(id);
-      setSubmitErr(null);
-      if (!id) return;
-      const p = promos.find((x) => x.id === id);
-      if (!p) return;
-      setForm((prev) => ({
-        ...prev,
-        cantidad_boletos: String(p.cantidad),
-        monto_total: p.monto != null ? String(p.monto) : prev.monto_total,
-      }));
-    },
-    [promos]
-  );
 
   const onField = useCallback(
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -262,13 +216,9 @@ export default function SorteoCuponManualForm({
     setOkOrden(null);
 
     const cantidad = Math.floor(Number(form.cantidad_boletos));
-    const monto = Number(form.monto_total);
+    const monto = totalCalculado;
     if (!sorteoId) {
       setSubmitErr("Elegí un sorteo.");
-      return;
-    }
-    if (promos.length > 0 && !promoId) {
-      setSubmitErr("Elegí una promo.");
       return;
     }
     if (!form.nombre.trim() || !form.apellido.trim()) {
@@ -283,8 +233,12 @@ export default function SorteoCuponManualForm({
       setSubmitErr("La cantidad de boletos debe ser mayor a 0.");
       return;
     }
-    if (!Number.isFinite(monto) || monto < 0) {
-      setSubmitErr("El monto total debe ser mayor o igual a 0.");
+    if (precioUnitario <= 0) {
+      setSubmitErr("El sorteo no tiene un precio por boleto configurado. Cargalo en el sorteo para calcular el total.");
+      return;
+    }
+    if (!Number.isFinite(monto) || monto <= 0) {
+      setSubmitErr("No se pudo calcular el total. Revisá la cantidad y el precio del sorteo.");
       return;
     }
     if (!idempotencyKey) {
@@ -303,13 +257,14 @@ export default function SorteoCuponManualForm({
           apellido: form.apellido.trim(),
           cedula: form.cedula.trim(),
           telefono: form.telefono.trim(),
+          ciudad: form.ciudad.trim() || null,
           cantidad_boletos: cantidad,
           monto_total: monto,
           observacion_interna: form.observacion_interna.trim() || null,
           generar_ticket_png: form.generar_ticket_png,
           idempotency_key: idempotencyKey,
           codigo_verificador: form.codigo_verificador.trim() || null,
-          promo_nombre: promoSel?.label ?? null,
+          promo_nombre: null,
           metodo_pago: form.metodo_pago === "transferencia" ? "transferencia" : "efectivo",
         }),
       });
@@ -332,7 +287,11 @@ export default function SorteoCuponManualForm({
         error?: string;
       };
       if (!res.ok || !json.success) {
-        setSubmitErr(json.error ?? "No se pudo registrar la venta.");
+        if (res.status === 401) {
+          setSubmitErr("Tu sesión expiró. Volvé a iniciar sesión y reintentá la venta.");
+        } else {
+          setSubmitErr(json.error ?? "No se pudo registrar la venta.");
+        }
         return;
       }
 
@@ -495,96 +454,49 @@ export default function SorteoCuponManualForm({
         />
       </label>
 
-      {loadingPromos && promos.length === 0 ? (
-        <p className="text-xs text-slate-500">Cargando promos…</p>
-      ) : null}
+      <label className="flex flex-col gap-1 text-xs text-slate-600">
+        Ciudad
+        <input
+          name="ciudad"
+          value={form.ciudad}
+          onChange={onField}
+          placeholder="Ej. Ciudad del Este"
+          className="border border-slate-300 rounded px-3 py-2.5 text-base sm:px-2 sm:py-2 sm:text-sm"
+          autoComplete="address-level2"
+        />
+      </label>
 
-      {promos.length > 0 ? (
-        <div className="flex flex-col gap-1.5 text-xs text-slate-600">
-          <span>Promo *</span>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {promos.map((p) => {
-              const sel = p.id === promoId;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => onPromoChange(p.id)}
-                  aria-pressed={sel}
-                  className={`flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2.5 text-left transition-colors ${
-                    sel
-                      ? "border-[#4FAEB2] bg-[#4FAEB2]/10 text-slate-900 ring-2 ring-[#4FAEB2]/25"
-                      : "border-slate-200 bg-white text-slate-700 hover:border-[#4FAEB2]/60"
-                  }`}
-                >
-                  <span className="text-sm font-semibold leading-tight">{p.label}</span>
-                  <span className="text-[11px] text-slate-500">
-                    {p.cantidad} {p.cantidad === 1 ? "boleta" : "boletas"}
-                    {p.monto != null ? ` · Gs. ${formatGs(p.monto)}` : " · precio de lista"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-
-      {modoManual ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-2">
-          <label className="flex flex-col gap-1 text-xs text-slate-600">
-            Cantidad boletos *
-            <input
-              name="cantidad_boletos"
-              type="number"
-              min={1}
-              step={1}
-              value={form.cantidad_boletos}
-              onChange={onField}
-              required
-              className="border border-slate-300 rounded px-3 py-2.5 text-base sm:px-2 sm:py-2 sm:text-sm"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-600">
-            Monto total (₲) *
-            <input
-              name="monto_total"
-              type="number"
-              min={0}
-              step={1}
-              value={form.monto_total}
-              onChange={onField}
-              required
-              className="border border-slate-300 rounded px-3 py-2.5 text-base tabular-nums sm:px-2 sm:py-2 sm:text-sm"
-            />
-          </label>
-        </div>
-      ) : promoSel ? (
-        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
-          <div className="flex items-baseline justify-between gap-3">
-            <span>
-              {promoSel.cantidad} {promoSel.cantidad === 1 ? "boleta" : "boletas"}
-            </span>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-2">
+        <label className="flex flex-col gap-1 text-xs text-slate-600">
+          Cantidad de boletas *
+          <input
+            name="cantidad_boletos"
+            type="number"
+            min={1}
+            step={1}
+            value={form.cantidad_boletos}
+            onChange={onField}
+            required
+            inputMode="numeric"
+            className="border border-slate-300 rounded px-3 py-2.5 text-base sm:px-2 sm:py-2 sm:text-sm"
+          />
+        </label>
+        <div className="flex flex-col gap-1 text-xs text-slate-600">
+          Total a cobrar (₲)
+          <div className="flex items-center justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2.5 sm:px-2 sm:py-2">
             <span className="text-base font-semibold tabular-nums text-slate-900">
-              Gs. {formatGs(Number(form.monto_total) || 0)}
+              Gs. {formatGs(totalCalculado)}
             </span>
+            {precioUnitario > 0 ? (
+              <span className="text-[11px] text-slate-500">
+                {cantidadNum || 0} × {formatGs(precioUnitario)}
+              </span>
+            ) : (
+              <span className="text-[11px] text-amber-600">sin precio configurado</span>
+            )}
           </div>
-          {promoSel.monto == null ? (
-            <label className="mt-2 flex flex-col gap-1">
-              Monto total (₲) *
-              <input
-                name="monto_total"
-                type="number"
-                min={0}
-                step={1}
-                value={form.monto_total}
-                onChange={onField}
-                required
-                className="rounded border border-slate-300 px-3 py-2.5 text-base tabular-nums sm:px-2 sm:py-2 sm:text-sm"
-              />
-            </label>
-          ) : null}
         </div>
-      ) : null}
+      </div>
 
       <label className="flex flex-col gap-1 text-xs text-slate-600">
         Método de pago

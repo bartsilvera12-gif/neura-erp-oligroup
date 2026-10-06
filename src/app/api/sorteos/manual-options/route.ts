@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
     const sb = await getChatServiceClientForEmpresa(empresaId);
     const { data, error } = await sb
       .from("sorteos")
-      .select("id, nombre, estado")
+      .select("id, nombre, estado, precio_por_boleto")
       .eq("empresa_id", empresaId)
       .eq("estado", "activo")
       .order("created_at", { ascending: false });
@@ -44,13 +44,19 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(errorResponse(error.message), { status: 400 });
     }
 
-    const rows = ((data ?? []) as Array<{ id?: unknown; nombre?: unknown; estado?: unknown }>).map(
-      (r) => ({
-        id: String(r.id ?? ""),
-        nombre: String(r.nombre ?? ""),
-        estado: String(r.estado ?? "activo"),
-      })
-    );
+    const rows = (
+      (data ?? []) as Array<{
+        id?: unknown;
+        nombre?: unknown;
+        estado?: unknown;
+        precio_por_boleto?: unknown;
+      }>
+    ).map((r) => ({
+      id: String(r.id ?? ""),
+      nombre: String(r.nombre ?? ""),
+      estado: String(r.estado ?? "activo"),
+      precio_por_boleto: r.precio_por_boleto != null ? Number(r.precio_por_boleto) : null,
+    }));
 
     return NextResponse.json(successResponse(rows.filter((r) => r.id.length > 0)));
   } catch (e) {
