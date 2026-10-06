@@ -262,15 +262,22 @@ export async function createSorteoManualCashSaleViaDirectPostgres(
     }
 
     const precioBase = Number(s.precio_por_boleto);
-    const listaCalc = Math.round((Number.isFinite(precioBase) ? precioBase : 0) * qty);
     /**
-     * Venta manual: el total se calcula SIEMPRE por precio del sorteo × cantidad, para que el
-     * operador no cargue importes a mano. Si el sorteo no tiene precio configurado (0), caemos al
-     * monto informado como red de seguridad.
+     * Venta manual: el total es SIEMPRE precio del sorteo × cantidad (regla obligatoria). El monto
+     * enviado por el front NO altera el total. Si el sorteo no tiene un precio por boleto válido
+     * configurado, no se puede calcular el total → se aborta la venta (sin fallback al monto del front).
      */
-    const montoFinal = listaCalc > 0 ? listaCalc : montoRounded;
-    const precioFuenteIns: "lista" | "promo" = montoFinal === listaCalc ? "lista" : "promo";
-    const precioRegularRef: number | null = precioFuenteIns === "promo" ? listaCalc : null;
+    if (!Number.isFinite(precioBase) || precioBase <= 0) {
+      await client.query("ROLLBACK");
+      return {
+        ok: false,
+        message:
+          "El sorteo no tiene un precio por boleto válido configurado. Configuralo en el sorteo para registrar la venta manual.",
+      };
+    }
+    const montoFinal = Math.round(precioBase * qty);
+    const precioFuenteIns = "lista";
+    const precioRegularRef: number | null = null;
 
     const wa = normalizeTelefonoSorteo(input.telefono);
     const ce = input.cedula.trim();
