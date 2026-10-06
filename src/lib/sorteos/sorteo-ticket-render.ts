@@ -724,7 +724,8 @@ export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Pro
   const tel = (input.telefono ?? "").trim();
   const nombre = (input.clienteNombre ?? "").trim();
   const sorteoNombre = (input.sorteoNombre ?? "").trim();
-  const nro = String(input.cupones[0] ?? input.numeroOrden ?? "").trim();
+  const cuponesList = (input.cupones ?? []).map((c) => String(c).trim()).filter(Boolean);
+  const primaryNro = cuponesList[0] ?? String(input.numeroOrden ?? "").trim();
 
   // Logo embebido (si hay bytes)
   let logoSvg = "";
@@ -783,21 +784,78 @@ export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Pro
       fill: INK,
     })
   );
-  texts.push(
-    svgTextAsPath({
-      text: `NRO: ${nro}`,
-      x: LEFT_X,
-      y: Y_NRO,
-      fontSize: 92,
-      weight: 800,
-      fill: INK,
-    })
-  );
+  /**
+   * Número(s) de cupón. Con 1 boleta: el número grande (como siempre). Con varias boletas:
+   * se listan TODOS los números (igual que los otros diseños de ticket), y la fecha/precio
+   * se corren debajo del bloque de números.
+   */
+  let fechaY = Y_FECHA;
+  let precioY = Y_PRECIO;
+  if (cuponesList.length <= 1) {
+    texts.push(
+      svgTextAsPath({
+        text: `NRO: ${primaryNro}`,
+        x: LEFT_X,
+        y: Y_NRO,
+        fontSize: 92,
+        weight: 800,
+        fill: INK,
+      })
+    );
+  } else {
+    const n = cuponesList.length;
+    texts.push(
+      svgTextAsPath({ text: "NROS:", x: LEFT_X, y: 885, fontSize: 36, weight: 700, fill: INK })
+    );
+    const fs = n <= 4 ? 60 : n <= 9 ? 46 : 36;
+    const approxCharW = fs * 0.62;
+    const sep = "   ";
+    const sepW = sep.length * approxCharW;
+    const usableW = W - LEFT_X * 2;
+    const rows: string[][] = [[]];
+    let curW = 0;
+    for (const c of cuponesList) {
+      const w = c.length * approxCharW + sepW;
+      if (curW + w > usableW && rows[rows.length - 1]!.length > 0) {
+        rows.push([]);
+        curW = 0;
+      }
+      rows[rows.length - 1]!.push(c);
+      curW += w;
+    }
+    const step = fs + 16;
+    const bottomLimit = 1090;
+    let y = 950;
+    let rendered = 0;
+    for (const row of rows) {
+      if (y > bottomLimit) {
+        texts.push(
+          svgTextAsPath({
+            text: `+${n - rendered} más`,
+            x: LEFT_X,
+            y: Math.min(y, bottomLimit),
+            fontSize: 28,
+            weight: 600,
+            fill: INK,
+          })
+        );
+        y += 30;
+        break;
+      }
+      texts.push(
+        svgTextAsPath({ text: row.join(sep), x: LEFT_X, y, fontSize: fs, weight: 800, fill: INK })
+      );
+      rendered += row.length;
+      y += step;
+    }
+    fechaY = y + 20;
+    precioY = fechaY + 46;
+  }
   texts.push(
     svgTextAsPath({
       text: `FECHA: ${fecha}`,
       x: LEFT_X,
-      y: Y_FECHA,
+      y: fechaY,
       fontSize: 30,
       weight: 400,
       fill: INK,
@@ -808,7 +866,7 @@ export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Pro
       svgTextAsPath({
         text: `${precio} Gs.`,
         x: LEFT_X,
-        y: Y_PRECIO,
+        y: precioY,
         fontSize: 30,
         weight: 400,
         fill: INK,
