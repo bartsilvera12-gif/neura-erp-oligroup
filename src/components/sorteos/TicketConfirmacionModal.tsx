@@ -1,12 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import QRCode from "qrcode";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import type { PhysicalCouponPrintRow } from "@/lib/sorteos/physical-coupons-print";
-import {
-  buildFormatCss,
-  buildThermalBody,
-} from "@/app/sorteos/[id]/imprimir-cupones/PhysicalCouponsPrintClient";
+import { buildPhysicalCouponsPrintDocument } from "@/app/sorteos/[id]/imprimir-cupones/PhysicalCouponsPrintClient";
 
 type Envio = { estado: "idle" | "compartiendo" | "ok" | "error"; mensaje?: string };
 
@@ -22,6 +20,10 @@ type Props = {
   /** Para el cupón físico (una página por número, formato ticketera 80mm). */
   documentoCliente?: string;
   sorteoNombre?: string;
+  /** Sorteo + datos para imprimir el cupón físico con formato OLI (logo, QR, ciudad, valor). */
+  sorteoId?: string;
+  ciudad?: string;
+  precioBoleto?: number | null;
 };
 
 /**
@@ -62,11 +64,18 @@ export default function TicketConfirmacionModal({
   montoTotal,
   documentoCliente = "",
   sorteoNombre = "",
+  sorteoId = "",
+  ciudad = "",
+  precioBoleto = null,
 }: Props) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [envio, setEnvio] = useState<Envio>({ estado: "idle" });
+
+  /** Logo + QR del sorteo, para imprimir el cupón físico con formato OLI (mismo que "Imprimir cupones"). */
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
   const waDigits = useMemo(() => normalizeWaDigits(telefonoCliente), [telefonoCliente]);
   const nombreArchivo = useMemo(
@@ -98,6 +107,44 @@ export default function TicketConfirmacionModal({
     }
   }, [open]);
 
+  /** Branding (logo incrustado + QR) para la impresión térmica con formato OLI. */
+  useEffect(() => {
+    if (!open || !sorteoId) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithSupabaseSession(
+          `/api/sorteos/print-branding?sorteo_id=${encodeURIComponent(sorteoId)}`,
+          { cache: "no-store" }
+        );
+        const json = (await res.json()) as {
+          success?: boolean;
+          data?: { logoDataUrl?: string | null; qrUrl?: string | null };
+        };
+        if (cancelled || !res.ok || !json.success) return;
+        setLogoDataUrl(json.data?.logoDataUrl ?? null);
+        const qrUrl = (json.data?.qrUrl ?? "").trim();
+        if (qrUrl) {
+          const dataUrl = await QRCode.toDataURL(qrUrl, {
+            margin: 1,
+            width: 320,
+            errorCorrectionLevel: "M",
+          });
+          if (!cancelled) setQrDataUrl(dataUrl);
+        } else if (!cancelled) {
+          setQrDataUrl(null);
+        }
+      } catch {
+        /* sin branding: el cupón físico igual imprime (sin logo/QR) */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, sorteoId]);
+
   /** Un cupón físico por número, con los mismos campos que "Imprimir cupones". */
   const cuponesFisicos = useMemo<PhysicalCouponPrintRow[]>(
     () =>
@@ -109,9 +156,21 @@ export default function TicketConfirmacionModal({
         nombre_participante: nombreCliente || null,
         documento: documentoCliente || null,
         whatsapp: telefonoCliente || null,
+        ciudad: ciudad || null,
+        precio_boleto: precioBoleto ?? null,
         fecha_display: fechaVenta,
       })),
-    [cupones, sorteoNombre, numeroOrden, nombreCliente, documentoCliente, telefonoCliente, fechaVenta]
+    [
+      cupones,
+      sorteoNombre,
+      numeroOrden,
+      nombreCliente,
+      documentoCliente,
+      telefonoCliente,
+      ciudad,
+      precioBoleto,
+      fechaVenta,
+    ]
   );
 
   const mensaje = useMemo(() => {
@@ -384,12 +443,15 @@ export default function TicketConfirmacionModal({
 
     /**
      * Con números: un cupón por página, formato ticketera 80mm con corte entre cupones.
-     * Es el mismo HTML/CSS de "Imprimir cupones" (buildThermalBody / buildFormatCss).
+     * Usa el MISMO formato OLI de "Imprimir cupones" (logo, QR, ciudad, número, valor, gracias).
      */
-    const docCupones = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Cupones orden ${numeroOrden ?? ""}</title>
-<style>${buildFormatCss("thermal_80", true)}</style>
-</head><body>${buildThermalBody(cuponesFisicos, true)}</body></html>`;
+    const docCupones = buildPhysicalCouponsPrintDocument(
+      cuponesFisicos,
+      `Cupones orden ${numeroOrden ?? ""}`,
+      "thermal_80",
+      true,
+      { logoDataUrl, qrDataUrl }
+    );
 
     const docImagen = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Ticket ${numeroOrden ?? ""}</title>
@@ -437,7 +499,7 @@ export default function TicketConfirmacionModal({
     };
 
     document.body.appendChild(iframe);
-  }, [signedUrl, numeroOrden, nombreCliente, cupones, montoTotal, cuponesFisicos]);
+  }, [signedUrl, numeroOrden, nombreCliente, cupones, montoTotal, cuponesFisicos, logoDataUrl, qrDataUrl]);
 
   if (!open) return null;
 
