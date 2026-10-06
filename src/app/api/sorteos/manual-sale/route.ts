@@ -30,6 +30,8 @@ export type ManualSaleBody = {
   apellido?: string;
   cedula?: string;
   telefono?: string;
+  /** Ciudad del comprador. Opcional; se guarda en el cliente y en la entrada. */
+  ciudad?: string | null;
   cantidad_boletos?: number;
   monto_total?: number;
   observacion_interna?: string | null;
@@ -68,6 +70,7 @@ export async function POST(request: NextRequest) {
     const apellido = typeof body.apellido === "string" ? body.apellido.trim() : "";
     const cedula = typeof body.cedula === "string" ? body.cedula.trim() : "";
     const telefono = typeof body.telefono === "string" ? body.telefono.trim() : "";
+    const ciudad = typeof body.ciudad === "string" ? body.ciudad.trim().slice(0, 120) : "";
     const idemRaw = typeof body.idempotency_key === "string" ? body.idempotency_key.trim() : "";
     const observacion =
       typeof body.observacion_interna === "string" ? body.observacion_interna.trim() : "";
@@ -119,6 +122,7 @@ export async function POST(request: NextRequest) {
       apellido,
       cedula,
       telefono,
+      ciudad: ciudad || null,
       cantidadBoletos: Math.floor(cantidad),
       montoTotal,
       observacionInterna: observacion.length > 0 ? observacion : null,
