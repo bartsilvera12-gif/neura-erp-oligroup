@@ -159,6 +159,10 @@ function renderThermalCouponInner(row: PhysicalCouponPrintRow, branding: Thermal
   const qr = branding.qrDataUrl ? `<span class="oli-qr" role="img" aria-label="QR"></span>` : "";
   const head = logo || qr ? `<div class="oli-head">${logo}${qr}</div>` : "";
 
+  const nombre = row.nombre_participante
+    ? `<p class="oli-nombre">NOMBRE: ${escapeHtml(row.nombre_participante)}</p>`
+    : "";
+
   const metaParts: string[] = [];
   if (row.documento) metaParts.push(`CI: ${escapeHtml(row.documento)}`);
   if (row.ciudad) metaParts.push(`CIUDAD: ${escapeHtml(row.ciudad)}`);
@@ -174,6 +178,7 @@ function renderThermalCouponInner(row: PhysicalCouponPrintRow, branding: Thermal
   return `
     ${head}
     ${OLI_CLOVER_SVG}
+    ${nombre}
     ${meta}
     <p class="oli-edicion">EDICIÓN: ${escapeHtml(row.sorteo_nombre)}</p>
     <p class="oli-nro">NRO: <strong>${escapeHtml(row.numero_cupon)}</strong></p>
@@ -266,6 +271,7 @@ export function buildFormatCss(
       .oli-logo:only-child { width: 70%; margin: 0 auto; background-position: center; }
       .oli-qr:only-child { margin: 0 auto; background-position: center; }
       .oli-clover-svg { height: ${cloverH}; width: auto; display: block; margin: 2px auto 4px; }
+      .oli-nombre { font-size: ${edicionSize}; color: #000 !important; font-weight: 700; margin: 3px 0; word-break: break-word; }
       .oli-meta { font-size: ${metaSize}; color: #000 !important; font-weight: 600; margin: 2px 0; word-break: break-word; }
       .oli-edicion { font-size: ${edicionSize}; color: #000 !important; font-weight: 700; text-transform: uppercase; margin: 3px 0; }
       .oli-nro { font-size: ${nroSize}; color: #000 !important; font-weight: 900; line-height: 1.05; margin: 4px 0; font-variant-numeric: tabular-nums; }
