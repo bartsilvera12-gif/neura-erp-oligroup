@@ -158,12 +158,16 @@ export default function SorteoCuponManualForm({
     monto: number;
     documento: string;
     sorteoNombre: string;
+    ciudad: string;
+    precioBoleto: number | null;
   }>({
     nombre: "",
     telefono: "",
     monto: 0,
     documento: "",
     sorteoNombre: "",
+    ciudad: "",
+    precioBoleto: null,
   });
 
   /**
@@ -325,6 +329,8 @@ export default function SorteoCuponManualForm({
         monto: Number.isFinite(monto) ? monto : 0,
         documento: form.cedula.trim(),
         sorteoNombre: sorteos.find((s) => s.id === sorteoId)?.nombre ?? "",
+        ciudad: form.ciudad.trim(),
+        precioBoleto: precioUnitario,
       });
       /**
        * El modal es el cierre de TODA venta, haya PNG o no: sin imagen igual muestra los
@@ -580,6 +586,9 @@ export default function SorteoCuponManualForm({
         montoTotal={okCliente.monto}
         documentoCliente={okCliente.documento}
         sorteoNombre={okCliente.sorteoNombre}
+        sorteoId={sorteoId}
+        ciudad={okCliente.ciudad}
+        precioBoleto={okCliente.precioBoleto}
       />
     </form>
   );

@@ -344,7 +344,7 @@ export function buildFormatCss(
 /**
  * Documento HTML mínimo solo con cupones (sin AppShell). Evita overflow/h-svh del ERP en impresión.
  */
-function buildPhysicalCouponsPrintDocument(
+export function buildPhysicalCouponsPrintDocument(
   rows: PhysicalCouponPrintRow[],
   documentTitle: string,
   format: PrintFormat,

@@ -643,8 +643,17 @@ export type SorteoPrintBranding = {
  * Lectura pura; no modifica nada del ticket de WhatsApp.
  */
 export async function fetchSorteoPrintBrandingServer(sorteoId: string): Promise<SorteoPrintBranding> {
-  const empty: SorteoPrintBranding = { logoDataUrl: null, qrUrl: null };
   const empresaId = await getEmpresaIdForCurrentUserServer();
+  if (!empresaId) return { logoDataUrl: null, qrUrl: null };
+  return fetchSorteoPrintBrandingForEmpresa(empresaId, sorteoId);
+}
+
+/** Igual que fetchSorteoPrintBrandingServer pero con empresa ya resuelta (para endpoints API). */
+export async function fetchSorteoPrintBrandingForEmpresa(
+  empresaId: string,
+  sorteoId: string
+): Promise<SorteoPrintBranding> {
+  const empty: SorteoPrintBranding = { logoDataUrl: null, qrUrl: null };
   if (!empresaId) return empty;
 
   const dataSchema = await fetchDataSchemaForEmpresaId(empresaId);
