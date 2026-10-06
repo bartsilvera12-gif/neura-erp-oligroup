@@ -211,13 +211,20 @@ export function buildThermalBody(
 ): string {
   // Diseño OLI GROUP solo cuando el caller pasa branding (impresión manual). El resto (TicketConfirmacionModal) usa el diseño clásico.
   const useOli = branding !== undefined;
-  const base = useOli ? "coupon-card coupon-card--oli" : "coupon-card";
-  const cls = cutEachCoupon ? `${base} coupon-card--cut` : base;
+  if (useOli) {
+    // Cada ticket: tarjeta ajustada al contenido + 2cm de papel en blanco al final (para cortar).
+    const cutCls = cutEachCoupon ? " thermal-unit--cut" : "";
+    const units = rows
+      .map(
+        (row) =>
+          `<div class="thermal-unit${cutCls}"><article class="coupon-card coupon-card--oli">${renderThermalCouponInner(row, branding)}</article><div class="oli-tail" aria-hidden="true"></div></div>`
+      )
+      .join("");
+    return `<section class="thermal-ticket-list">${units}</section>`;
+  }
+  const cls = cutEachCoupon ? "coupon-card coupon-card--cut" : "coupon-card";
   const articles = rows
-    .map(
-      (row) =>
-        `<article class="${cls}">${useOli ? renderThermalCouponInner(row, branding) : renderCouponInner(row)}</article>`
-    )
+    .map((row) => `<article class="${cls}">${renderCouponInner(row)}</article>`)
     .join("");
   return `<section class="thermal-ticket-list">${articles}</section>`;
 }
@@ -279,6 +286,10 @@ export function buildFormatCss(
       .oli-fecha { font-size: ${fechaSize}; color: #000 !important; margin: 2px 0; }
       .oli-valor { font-size: ${valorSize}; color: #000 !important; font-weight: 800; margin: 3px 0; }
       .oli-gracias { font-size: ${graciasSize}; color: #000 !important; font-style: italic; margin-top: 6px; }
+      .thermal-unit { break-inside: avoid; page-break-inside: avoid; }
+      .thermal-unit--cut { break-after: page; page-break-after: always; }
+      .thermal-unit--cut:last-child { break-after: auto; page-break-after: auto; }
+      .oli-tail { height: 20mm; }
       `
       : "";
 
