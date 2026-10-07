@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type { SorteoCuponOrdenRow } from "@/lib/sorteos/types";
 import SorteoCuponesPagoCell from "@/components/sorteos/SorteoCuponesPagoCell";
 import SorteoCuponesImpresionCell from "@/components/sorteos/SorteoCuponesImpresionCell";
+import SorteoCuponesCancelarCell from "@/components/sorteos/SorteoCuponesCancelarCell";
 
 /** Sobre este umbral, "Imprimir todos los filtrados" pide confirmación. */
 const CONFIRM_TODOS_THRESHOLD = 300;
@@ -38,6 +39,7 @@ export default function SorteoCuponesBatchPrintClient({
   estadoParam,
   qParam,
   totalCount,
+  esAdmin = false,
 }: {
   rows: SorteoCuponOrdenRow[];
   /** Sorteo del filtro actual; null cuando se eligió "Todos los sorteos". */
@@ -45,6 +47,8 @@ export default function SorteoCuponesBatchPrintClient({
   estadoParam?: string;
   qParam?: string;
   totalCount: number;
+  /** Solo los administradores ven la acción de cancelar boletas. */
+  esAdmin?: boolean;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [ordenDesde, setOrdenDesde] = useState("");
@@ -250,6 +254,9 @@ export default function SorteoCuponesBatchPrintClient({
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Pago</th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Fecha</th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Chat</th>
+                  {esAdmin ? (
+                    <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Acción</th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -303,6 +310,13 @@ export default function SorteoCuponesBatchPrintClient({
                           "—"
                         )}
                       </td>
+                      {esAdmin ? (
+                        <SorteoCuponesCancelarCell
+                          entradaId={r.entrada_id}
+                          numeroOrden={r.numero_orden}
+                          cupones={r.numeros_cupon}
+                        />
+                      ) : null}
                     </tr>
                   );
                 })}
