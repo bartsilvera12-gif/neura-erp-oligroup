@@ -7,6 +7,8 @@ import {
   type SorteoEntradasListParams,
 } from "@/lib/sorteos/server-queries";
 import type { SorteoEntradaEstadoPago } from "@/lib/sorteos/types";
+import { getAuthWithRol } from "@/lib/middleware/auth";
+import { esRolAdminEmpresa } from "@/lib/modulos/resolve-effective-modules";
 import SorteoCuponesEstadoPagoFilter from "@/components/sorteos/SorteoCuponesEstadoPagoFilter";
 import SorteosCuponesManualClient from "@/components/sorteos/SorteosCuponesManualClient";
 import SorteoCuponesBatchPrintClient from "@/components/sorteos/SorteoCuponesBatchPrintClient";
@@ -84,6 +86,12 @@ export default async function SorteoCuponesPage({
 
   const totalPages = Math.max(1, Math.ceil(total_count / limit));
   const qsBase = sp;
+
+  // Solo administradores (o super_admin) ven la acción de cancelar boletas.
+  const authRol = await getAuthWithRol();
+  const esAdmin = Boolean(
+    authRol && ((authRol.rol ?? "").trim() === "super_admin" || esRolAdminEmpresa(authRol.rol))
+  );
 
   return (
     <div className="space-y-6">
@@ -236,6 +244,7 @@ export default async function SorteoCuponesPage({
         estadoParam={estadoPago}
         qParam={q}
         totalCount={total_count}
+        esAdmin={esAdmin}
       />
     </div>
   );
