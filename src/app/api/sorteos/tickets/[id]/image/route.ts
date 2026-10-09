@@ -47,10 +47,21 @@ export async function GET(
     if (error || !row) {
       return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     }
-    const path = (row as { storage_path?: string | null }).storage_path?.trim();
-    if (!path) {
+    const storedPath = (row as { storage_path?: string | null }).storage_path?.trim();
+    if (!storedPath) {
       return NextResponse.json({ ok: false, error: "no_file" }, { status: 400 });
     }
+
+    // Con órdenes de 2+ boletas se genera una imagen por boleta. El chat guarda
+    // `?p=<path>` para pedir la imagen exacta de cada una. Solo se permite un
+    // path dentro de la MISMA carpeta de la entrega (prefijo de `storage_path`),
+    // para no poder leer archivos de otra orden/empresa.
+    const requestedPath = new URL(request.url).searchParams.get("p")?.trim() || "";
+    const folderPrefix = storedPath.slice(0, storedPath.lastIndexOf("/") + 1);
+    const path =
+      requestedPath && folderPrefix && requestedPath.startsWith(folderPrefix)
+        ? requestedPath
+        : storedPath;
 
     const signed = await createSignedUrlForTicket(sb, path, 600);
     if (!signed.url) {

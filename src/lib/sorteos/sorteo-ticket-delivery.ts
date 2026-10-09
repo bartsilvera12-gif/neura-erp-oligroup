@@ -30,6 +30,7 @@ import {
   sorteoTicketAssetLogoPath,
   sorteoTicketAssetTemplateCandidates,
   sorteoTicketGeneratedPath,
+  sorteoTicketGeneratedPathForCupon,
   uploadGeneratedTicketPng,
 } from "@/lib/sorteos/sorteo-ticket-storage";
 
@@ -431,26 +432,64 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
       templateMime: templateDl?.mime ?? null,
     };
 
-    const { png, hash } = await renderTicketPngUnified(renderInput);
-    const genPath = sorteoTicketGeneratedPath(empresaId, sorteoId, entradaId, templateRevision);
-    const up = await uploadGeneratedTicketPng(supabase, genPath, png);
-    if (up.error) {
-      throw new Error(up.error);
+    // ===== Una imagen por boleta =====
+    // Si la orden tiene 2+ cupones, se genera y envía UNA imagen por cada
+    // cupón (pedido del cliente: "compra 3 boletas → recibe 3 imágenes", no
+    // todas en una sola imagen). Con 0 o 1 cupón el comportamiento es idéntico
+    // al histórico: una sola imagen con el mismo path clásico.
+    const cuponesEmit = normalized.cupones.filter((c) => String(c).trim());
+    const perCupon = cuponesEmit.length > 1;
+
+    type TicketJob = { cupones: string[]; path: string; cupon: string | null };
+    const jobs: TicketJob[] = perCupon
+      ? cuponesEmit.map((c, i) => ({
+          cupones: [c],
+          path: sorteoTicketGeneratedPathForCupon(
+            empresaId,
+            sorteoId,
+            entradaId,
+            templateRevision,
+            i + 1
+          ),
+          cupon: c,
+        }))
+      : [
+          {
+            cupones: normalized.cupones,
+            path: sorteoTicketGeneratedPath(empresaId, sorteoId, entradaId, templateRevision),
+            cupon: cuponesEmit[0] ?? null,
+          },
+        ];
+
+    // Render + upload de todas las imágenes primero; recién después se envían.
+    const rendered: { path: string; hash: string; cupon: string | null }[] = [];
+    for (const job of jobs) {
+      const { png, hash } = await renderTicketPngUnified({ ...renderInput, cupones: job.cupones });
+      const up = await uploadGeneratedTicketPng(supabase, job.path, png);
+      if (up.error) {
+        throw new Error(up.error);
+      }
+      rendered.push({ path: job.path, hash, cupon: job.cupon });
+      console.info("[sorteo-ticket] storage_uploaded", {
+        bucket: SORTEO_TICKET_GENERATED_BUCKET,
+        storage_path: job.path,
+        deliveryId: rowId,
+      });
     }
 
-    console.info("[sorteo-ticket] storage_uploaded", {
-      bucket: SORTEO_TICKET_GENERATED_BUCKET,
-      storage_path: genPath,
-      deliveryId: rowId,
-    });
+    const primary = rendered[0]!;
+    const cuponImages = rendered.map((r) => ({ path: r.path, cupon: r.cupon }));
 
     await db
       .from("sorteo_ticket_deliveries")
       .update({
         status: "generated",
         storage_bucket: "sorteo-tickets-generated",
-        storage_path: genPath,
-        png_bytes_hash: hash,
+        storage_path: primary.path,
+        png_bytes_hash: primary.hash,
+        // `cupon_images`: lista completa de imágenes por boleta (para reenvío y
+        // para que el proxy del ERP renderice cada una inline).
+        payload_snapshot: { ...payloadSnapshot, cupon_images: cuponImages },
         generated_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -459,11 +498,12 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
     console.info("[sorteo-ticket] delivery_saved", {
       deliveryId: rowId,
       status: "generated",
-      storage_path: genPath,
+      storage_path: primary.path,
+      images: rendered.length,
     });
 
     if (input.skipWhatsApp) {
-      const signedDry = await createSignedUrlForTicket(supabase, genPath, 600);
+      const signedDry = await createSignedUrlForTicket(supabase, primary.path, 600);
       let headOk = false;
       if (signedDry.url) {
         try {
@@ -484,22 +524,12 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
         deliveryId: rowId,
         lastStatus: "generated",
         storageBucket: "sorteo-tickets-generated",
-        storagePath: genPath,
+        storagePath: primary.path,
         signedUrlCreated: Boolean(signedDry.url),
         signedUrlHeadOk: headOk,
         signedUrlError: signedDry.error ?? null,
       };
     }
-
-    const signed = await createSignedUrlForTicket(supabase, genPath, 600);
-    if (!signed.url) {
-      throw new Error(signed.error ?? "signed_url");
-    }
-
-    console.info("[sorteo-ticket] signed_url_created", {
-      deliveryId: rowId,
-      hasUrl: true,
-    });
 
     let outbound: Awaited<ReturnType<typeof resolveOutboundTextContextFromIds>>;
     try {
@@ -522,53 +552,103 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
       provider: outbound.provider,
       channelId: input.channelId,
       contactId: input.contactId,
+      images: rendered.length,
     });
 
-    let sendResult: { ok: boolean; waMessageId?: string | null; raw?: unknown; error?: string };
-    if (outbound.provider === "ycloud") {
-      sendResult = await sendYCloudWhatsappMediaViaLink({
-        apiKey: outbound.apiKey,
-        fromE164: outbound.fromE164,
-        toDigits: outbound.toDigits,
-        kind: "image",
-        mediaLink: signed.url,
-        caption,
-      });
-    } else {
-      sendResult = await sendWhatsAppImage({
-        toDigits: outbound.toDigits,
-        phoneNumberId: outbound.phoneNumberId,
-        accessToken: outbound.accessToken,
-        imageUrl: signed.url,
-        caption,
-      });
-    }
+    // Envío secuencial: una imagen por boleta, mismo caption en todas.
+    let firstWaId: string | null = null;
+    for (let i = 0; i < rendered.length; i++) {
+      const img = rendered[i]!;
+      const signed = await createSignedUrlForTicket(supabase, img.path, 600);
+      if (!signed.url) {
+        throw new Error(signed.error ?? "signed_url");
+      }
 
-    if (!sendResult.ok) {
-      console.warn("[sorteo-ticket] whatsapp_send_error", {
+      let sendResult: { ok: boolean; waMessageId?: string | null; raw?: unknown; error?: string };
+      if (outbound.provider === "ycloud") {
+        sendResult = await sendYCloudWhatsappMediaViaLink({
+          apiKey: outbound.apiKey,
+          fromE164: outbound.fromE164,
+          toDigits: outbound.toDigits,
+          kind: "image",
+          mediaLink: signed.url,
+          caption,
+        });
+      } else {
+        sendResult = await sendWhatsAppImage({
+          toDigits: outbound.toDigits,
+          phoneNumberId: outbound.phoneNumberId,
+          accessToken: outbound.accessToken,
+          imageUrl: signed.url,
+          caption,
+        });
+      }
+
+      if (!sendResult.ok) {
+        console.warn("[sorteo-ticket] whatsapp_send_error", {
+          deliveryId: rowId,
+          provider: outbound.provider,
+          imageIndex: i + 1,
+          error: sendResult.error ?? "send_failed",
+        });
+        throw new Error(sendResult.error ?? "send_failed");
+      }
+
+      const waId =
+        typeof sendResult.waMessageId === "string" && sendResult.waMessageId
+          ? sendResult.waMessageId
+          : null;
+      if (i === 0) firstWaId = waId;
+
+      console.info("[sorteo-ticket] whatsapp_send_ok", {
         deliveryId: rowId,
+        whatsapp_message_id: waId,
         provider: outbound.provider,
-        error: sendResult.error ?? "send_failed",
+        imageIndex: i + 1,
       });
-      throw new Error(sendResult.error ?? "send_failed");
+
+      if (conversationId?.trim()) {
+        // Enriquecemos `raw_payload` con `image.link` apuntando al endpoint del
+        // ERP que regenera signed URLs a demanda. Con varias boletas agregamos
+        // `?p=<path>` (validado por prefijo de carpeta en el proxy) para que el
+        // chat del ERP renderice inline la imagen exacta de cada boleta.
+        const rawBase =
+          typeof sendResult.raw === "object" && sendResult.raw !== null
+            ? (sendResult.raw as Record<string, unknown>)
+            : {};
+        const erpImageProxy =
+          rendered.length > 1
+            ? `/api/sorteos/tickets/${rowId}/image?p=${encodeURIComponent(img.path)}`
+            : `/api/sorteos/tickets/${rowId}/image`;
+        const enrichedRaw: Record<string, unknown> = {
+          ...rawBase,
+          image: {
+            link: erpImageProxy,
+            caption: caption || undefined,
+          },
+          sorteo_ticket: {
+            delivery_id: rowId,
+            storage_bucket: "sorteo-tickets-generated",
+            storage_path: img.path,
+          },
+        };
+        await persistOutgoingChatMessage(supabase, {
+          conversation: { id: conversationId.trim(), empresa_id: empresaId },
+          content: caption ? `Ticket imagen\n${caption}` : "Ticket imagen enviado",
+          messageType: "image",
+          waMessageId: waId,
+          raw: enrichedRaw,
+          senderType: "system",
+          automationSource: "sorteo_ticket",
+        });
+      }
     }
-
-    console.info("[sorteo-ticket] whatsapp_send_ok", {
-      deliveryId: rowId,
-      whatsapp_message_id: sendResult.waMessageId ?? null,
-      provider: outbound.provider,
-    });
-
-    const waId =
-      typeof sendResult.waMessageId === "string" && sendResult.waMessageId
-        ? sendResult.waMessageId
-        : null;
 
     await db
       .from("sorteo_ticket_deliveries")
       .update({
         status: "sent",
-        whatsapp_message_id: waId,
+        whatsapp_message_id: firstWaId,
         provider: outbound.provider,
         channel_id: input.channelId,
         sent_at: new Date().toISOString(),
@@ -579,52 +659,18 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
     console.info("[sorteo-ticket] delivery_saved", {
       deliveryId: rowId,
       status: "sent",
-      whatsapp_message_id: waId,
+      whatsapp_message_id: firstWaId,
       provider: outbound.provider,
+      images: rendered.length,
     });
-
-    if (conversationId?.trim()) {
-      // Enriquecemos `raw_payload` con `image.link` apuntando al endpoint del ERP
-      // que regenera signed URLs a demanda (`/api/sorteos/tickets/:id/image`).
-      // Así el chat del ERP renderiza la imagen inline (parseOutgoingImageMessage
-      // lee `raw_payload.image.link`) sin acoplarse a la signed URL efímera que
-      // ya consumió Meta. NO cambia el envío a WhatsApp, solo el metadata que
-      // guardamos para el chat interno.
-      const rawBase =
-        typeof sendResult.raw === "object" && sendResult.raw !== null
-          ? (sendResult.raw as Record<string, unknown>)
-          : {};
-      const erpImageProxy = `/api/sorteos/tickets/${rowId}/image`;
-      const enrichedRaw: Record<string, unknown> = {
-        ...rawBase,
-        image: {
-          link: erpImageProxy,
-          caption: caption || undefined,
-        },
-        sorteo_ticket: {
-          delivery_id: rowId,
-          storage_bucket: "sorteo-tickets-generated",
-          storage_path: genPath,
-        },
-      };
-      await persistOutgoingChatMessage(supabase, {
-        conversation: { id: conversationId.trim(), empresa_id: empresaId },
-        content: caption ? `Ticket imagen\n${caption}` : "Ticket imagen enviado",
-        messageType: "image",
-        waMessageId: waId,
-        raw: enrichedRaw,
-        senderType: "system",
-        automationSource: "sorteo_ticket",
-      });
-    }
 
     return {
       ok: true,
       deliveryId: rowId,
       lastStatus: "sent",
       storageBucket: "sorteo-tickets-generated",
-      storagePath: genPath,
-      whatsappMessageId: waId,
+      storagePath: primary.path,
+      whatsappMessageId: firstWaId,
       provider: outbound.provider,
     };
   } catch (e) {
@@ -916,6 +962,23 @@ export async function resendSorteoTicketByDeliveryId(input: {
   const storagePath = (row as { storage_path?: string | null }).storage_path?.trim();
   if (!storagePath) return { ok: false, error: "no_file" };
 
+  // Lista de imágenes por boleta (si la orden tuvo 2+ cupones se guardó
+  // `cupon_images` en payload_snapshot). Reenviar = mandar todas. Fallback:
+  // una sola imagen (storage_path) para tickets viejos o de 1 boleta.
+  const payloadSnap = (row as { payload_snapshot?: unknown }).payload_snapshot;
+  const cuponImages =
+    payloadSnap && typeof payloadSnap === "object" && !Array.isArray(payloadSnap)
+      ? (payloadSnap as { cupon_images?: unknown }).cupon_images
+      : null;
+  const resendPaths: string[] = Array.isArray(cuponImages)
+    ? cuponImages
+        .map((c) =>
+          c && typeof c === "object" ? String((c as { path?: unknown }).path ?? "").trim() : ""
+        )
+        .filter(Boolean)
+    : [];
+  if (resendPaths.length === 0) resendPaths.push(storagePath);
+
   const convId = (row as { conversation_id?: string | null }).conversation_id;
   const channelId = (row as { channel_id?: string | null }).channel_id;
   if (!convId || !channelId) return { ok: false, error: "no_conversation" };
@@ -937,9 +1000,6 @@ export async function resendSorteoTicketByDeliveryId(input: {
   const cfg = normalizeTicketImageConfig(sr?.ticket_image_config);
   const sorteoNombre = String(sr?.nombre ?? "").trim();
 
-  const signed = await createSignedUrlForTicket(input.supabase, storagePath, 600);
-  if (!signed.url) return { ok: false, error: signed.error ?? "signed_url" };
-
   let outbound: Awaited<ReturnType<typeof resolveOutboundTextContextFromIds>>;
   try {
     outbound = await resolveOutboundTextContextFromIds(
@@ -959,72 +1019,85 @@ export async function resendSorteoTicketByDeliveryId(input: {
       (cfg.title ?? "").trim() ||
       `Orden Nº ${numOrden} — ${sorteoNombre}`.slice(0, 1024);
 
-  let sendResult: { ok: boolean; waMessageId?: string | null; raw?: unknown; error?: string };
-  if (outbound.provider === "ycloud") {
-    sendResult = await sendYCloudWhatsappMediaViaLink({
-      apiKey: outbound.apiKey,
-      fromE164: outbound.fromE164,
-      toDigits: outbound.toDigits,
-      kind: "image",
-      mediaLink: signed.url,
-      caption,
-    });
-  } else {
-    sendResult = await sendWhatsAppImage({
-      toDigits: outbound.toDigits,
-      phoneNumberId: outbound.phoneNumberId,
-      accessToken: outbound.accessToken,
-      imageUrl: signed.url,
-      caption,
+  // Reenvío secuencial: una imagen por boleta, mismo caption en todas.
+  let firstWaId: string | null = null;
+  for (let i = 0; i < resendPaths.length; i++) {
+    const path = resendPaths[i]!;
+    const signed = await createSignedUrlForTicket(input.supabase, path, 600);
+    if (!signed.url) return { ok: false, error: signed.error ?? "signed_url" };
+
+    let sendResult: { ok: boolean; waMessageId?: string | null; raw?: unknown; error?: string };
+    if (outbound.provider === "ycloud") {
+      sendResult = await sendYCloudWhatsappMediaViaLink({
+        apiKey: outbound.apiKey,
+        fromE164: outbound.fromE164,
+        toDigits: outbound.toDigits,
+        kind: "image",
+        mediaLink: signed.url,
+        caption,
+      });
+    } else {
+      sendResult = await sendWhatsAppImage({
+        toDigits: outbound.toDigits,
+        phoneNumberId: outbound.phoneNumberId,
+        accessToken: outbound.accessToken,
+        imageUrl: signed.url,
+        caption,
+      });
+    }
+
+    if (!sendResult.ok) return { ok: false, error: sendResult.error ?? "send_failed" };
+
+    const waId =
+      typeof sendResult.waMessageId === "string" && sendResult.waMessageId
+        ? sendResult.waMessageId
+        : null;
+    if (i === 0) firstWaId = waId;
+
+    // Mismo enriquecimiento que el envío automático: guardamos `image.link`
+    // apuntando al endpoint del ERP que regenera signed URLs a demanda, para
+    // que el chat del ERP renderice la imagen inline también en reenvíos. Con
+    // varias boletas, `?p=<path>` apunta a la imagen exacta de cada una.
+    const rawBase =
+      typeof sendResult.raw === "object" && sendResult.raw !== null
+        ? (sendResult.raw as Record<string, unknown>)
+        : {};
+    const erpImageProxy =
+      resendPaths.length > 1
+        ? `/api/sorteos/tickets/${input.deliveryId}/image?p=${encodeURIComponent(path)}`
+        : `/api/sorteos/tickets/${input.deliveryId}/image`;
+    const enrichedRaw: Record<string, unknown> = {
+      ...rawBase,
+      image: {
+        link: erpImageProxy,
+        caption: caption || undefined,
+      },
+      sorteo_ticket: {
+        delivery_id: input.deliveryId,
+        storage_bucket: "sorteo-tickets-generated",
+        storage_path: path,
+      },
+    };
+    await persistOutgoingChatMessage(input.supabase, {
+      conversation: { id: convId, empresa_id: input.empresaId },
+      content: caption ? `Ticket imagen (reenvío)\n${caption}` : "Ticket imagen reenviado",
+      messageType: "image",
+      waMessageId: waId,
+      raw: enrichedRaw,
+      senderType: "system",
+      automationSource: "sorteo_ticket_resend",
     });
   }
-
-  if (!sendResult.ok) return { ok: false, error: sendResult.error ?? "send_failed" };
-
-  const waId =
-    typeof sendResult.waMessageId === "string" && sendResult.waMessageId
-      ? sendResult.waMessageId
-      : null;
 
   await db
     .from("sorteo_ticket_deliveries")
     .update({
-      whatsapp_message_id: waId,
+      whatsapp_message_id: firstWaId,
       provider: outbound.provider,
       sent_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .eq("id", input.deliveryId);
-
-  // Mismo enriquecimiento que el envío automático: guardamos `image.link`
-  // apuntando al endpoint del ERP que regenera signed URLs a demanda, para
-  // que el chat del ERP renderice la imagen inline también en reenvíos.
-  const rawBase =
-    typeof sendResult.raw === "object" && sendResult.raw !== null
-      ? (sendResult.raw as Record<string, unknown>)
-      : {};
-  const erpImageProxy = `/api/sorteos/tickets/${input.deliveryId}/image`;
-  const enrichedRaw: Record<string, unknown> = {
-    ...rawBase,
-    image: {
-      link: erpImageProxy,
-      caption: caption || undefined,
-    },
-    sorteo_ticket: {
-      delivery_id: input.deliveryId,
-      storage_bucket: "sorteo-tickets-generated",
-      storage_path: storagePath,
-    },
-  };
-  await persistOutgoingChatMessage(input.supabase, {
-    conversation: { id: convId, empresa_id: input.empresaId },
-    content: caption ? `Ticket imagen (reenvío)\n${caption}` : "Ticket imagen reenviado",
-    messageType: "image",
-    waMessageId: waId,
-    raw: enrichedRaw,
-    senderType: "system",
-    automationSource: "sorteo_ticket_resend",
-  });
 
   return { ok: true };
 }

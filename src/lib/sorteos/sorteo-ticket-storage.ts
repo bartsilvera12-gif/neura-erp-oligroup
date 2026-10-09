@@ -44,6 +44,22 @@ export function sorteoTicketGeneratedPath(
   return `${empresaId}/${sorteoId}/${entradaId}/${templateRevision}.png`;
 }
 
+/**
+ * Path de una imagen por-cupón (una boleta por imagen). Se usa cuando la orden
+ * tiene 2+ boletas y el cliente quiere recibir una imagen por cada una.
+ * Mantiene el mismo prefijo de carpeta `{empresa}/{sorteo}/{entrada}/` que el
+ * path clásico, así la validación de pertenencia (endpoint /image) sigue igual.
+ */
+export function sorteoTicketGeneratedPathForCupon(
+  empresaId: string,
+  sorteoId: string,
+  entradaId: string,
+  templateRevision: number,
+  cuponIndex: number
+): string {
+  return `${empresaId}/${sorteoId}/${entradaId}/${templateRevision}-${cuponIndex}.png`;
+}
+
 export async function ensureTicketBucketsExist(supabase: AppSupabaseClient): Promise<void> {
   const { data: buckets } = await supabase.storage.listBuckets();
   const names = new Set((buckets ?? []).map((b) => b.name));
