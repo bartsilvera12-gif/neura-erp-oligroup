@@ -260,7 +260,9 @@ export function buildFormatCss(
 
     // Diseño OLI GROUP (logo + QR + trébol + ciudad + valor + agradecimiento). Solo impresión manual.
     const is58 = format === "thermal_58";
-    const logoH = is58 ? "40px" : "54px";
+    const logoH = is58 ? "56px" : "78px";
+    const logoW = is58 ? "62%" : "66%";
+    const logoWSolo = is58 ? "76%" : "80%";
     const qrH = is58 ? "42px" : "56px";
     const cloverH = is58 ? "20px" : "26px";
     const metaSize = is58 ? "11px" : "13px";
@@ -273,9 +275,9 @@ export function buildFormatCss(
       ? `
       .coupon-card--oli { text-align: center; }
       .oli-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; margin-bottom: 4px; }
-      .oli-logo { display: inline-block; height: ${logoH}; width: 58%; background-repeat: no-repeat; background-position: left center; background-size: contain; }
+      .oli-logo { display: inline-block; height: ${logoH}; width: ${logoW}; background-repeat: no-repeat; background-position: left center; background-size: contain; }
       .oli-qr { display: inline-block; height: ${qrH}; width: ${qrH}; flex: 0 0 auto; background-repeat: no-repeat; background-position: right center; background-size: contain; }
-      .oli-logo:only-child { width: 70%; margin: 0 auto; background-position: center; }
+      .oli-logo:only-child { width: ${logoWSolo}; margin: 0 auto; background-position: center; }
       .oli-qr:only-child { margin: 0 auto; background-position: center; }
       .oli-clover-svg { height: ${cloverH}; width: auto; display: block; margin: 2px auto 4px; }
       .oli-nombre { font-size: ${edicionSize}; color: #000 !important; font-weight: 700; margin: 3px 0; word-break: break-word; }
