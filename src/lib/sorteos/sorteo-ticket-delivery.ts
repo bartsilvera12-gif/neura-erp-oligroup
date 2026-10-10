@@ -980,16 +980,25 @@ export async function resendSorteoTicketByDeliveryId(input: {
   if (resendPaths.length === 0) resendPaths.push(storagePath);
 
   const convId = (row as { conversation_id?: string | null }).conversation_id;
-  const channelId = (row as { channel_id?: string | null }).channel_id;
-  if (!convId || !channelId) return { ok: false, error: "no_conversation" };
+  if (!convId) return { ok: false, error: "no_conversation" };
+
+  // Una boleta regenerada (nueva revisión) se inserta sin `channel_id` (solo se
+  // fijaba al marcar "sent"). Para que "Reenviar" funcione sin tocar la base a
+  // mano, si la fila no trae canal lo recuperamos de la conversación. No se
+  // modifica la conversación ni el contacto: solo se lee su canal.
+  let channelId = (row as { channel_id?: string | null }).channel_id?.trim() || null;
 
   const { data: conv } = await db
     .from("chat_conversations")
-    .select("contact_id")
+    .select("contact_id, channel_id")
     .eq("id", convId)
     .maybeSingle();
   const contactId = (conv as { contact_id?: string } | null)?.contact_id;
   if (!contactId) return { ok: false, error: "no_contact" };
+  if (!channelId) {
+    channelId = (conv as { channel_id?: string | null } | null)?.channel_id?.trim() || null;
+  }
+  if (!channelId) return { ok: false, error: "no_channel" };
 
   const sorteoId = (row as { sorteo_id: string }).sorteo_id;
   const sr = await loadSorteoRowForTicket({
@@ -1092,6 +1101,9 @@ export async function resendSorteoTicketByDeliveryId(input: {
   await db
     .from("sorteo_ticket_deliveries")
     .update({
+      // Dejamos el canal recuperado en la fila para que próximos reenvíos no
+      // dependan de volver a resolverlo desde la conversación.
+      channel_id: channelId,
       whatsapp_message_id: firstWaId,
       provider: outbound.provider,
       sent_at: new Date().toISOString(),
