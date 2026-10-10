@@ -1186,8 +1186,42 @@ export function createFlowEngine(ctx: FlowEngineContext) {
   }
 
   /**
+   * Campos de identidad del participante que NO deben completarse desde sesiones
+   * anteriores del mismo número (evita que una compra para un tercero, o datos de una
+   * prueba previa, se filtren a la compra actual). Deben venir de la sesión en curso.
+   */
+  const SORTEO_IDENTITY_FIELDS_NO_CROSS_SESSION = new Set<string>([
+    "nombre",
+    "apellido",
+    "nombre_completo",
+    "nombre_y_apellido",
+    "cliente_nombre",
+    "participante",
+    "primer_nombre",
+    "primer_apellido",
+    "primer nombre",
+    "primer apellido",
+    "cedula",
+    "cédula",
+    "documento",
+    "nro_documento",
+    "numero_documento",
+    "ci",
+    "ruc",
+    "cliente_documento",
+    "ciudad",
+    "localidad",
+    "ubicacion",
+    "telefono",
+    "celular",
+    "whatsapp",
+    "phone",
+  ]);
+
+  /**
    * Último valor no vacío por `field_name` en toda la conversación+mismo flujo (todas las sesiones).
    * Recorre filas por `created_at` descendente: la primera fila no vacía por clave gana (más reciente).
+   * Excluye los campos de identidad del participante (ver SORTEO_IDENTITY_FIELDS_NO_CROSS_SESSION).
    */
   async function mergeConversationFlowDataFromOlderSessions(input: {
     empresaId: string;
@@ -1212,47 +1246,17 @@ export function createFlowEngine(ctx: FlowEngineContext) {
       if (!key) continue;
       // No mezclar metadatos del comprobante de otro envío; el pipeline actual los define.
       if (key.startsWith("sorteo_comprobante_")) continue;
+      // Identidad del participante (nombre/cédula/ciudad/teléfono): NUNCA se rellena
+      // desde sesiones anteriores. Si una persona compra para otra, o reusó su número
+      // en una compra/prueba previa, los datos de esa compra NO deben filtrarse a esta.
+      // Si faltan en la sesión actual, la orden se bloquea y el flujo los vuelve a pedir.
+      if (SORTEO_IDENTITY_FIELDS_NO_CROSS_SESSION.has(key.toLowerCase())) continue;
       const val = String((row as { field_value?: string }).field_value ?? "").trim();
       if (!val || !slotEmpty(key)) continue;
       merged[key] = val;
       filledKeys.push(key);
     }
     return { merged, filledKeys };
-  }
-
-  /** Si el flujo no tiene nombre guardado, usar nombre del contacto WhatsApp (chat_contacts). */
-  async function hydrateSorteoFlowDataFromChatContact(
-    empresaId: string,
-    contactId: string | null | undefined,
-    base: Record<string, string>
-  ): Promise<Record<string, string>> {
-    const cid = contactId?.trim();
-    if (!cid) return base;
-    const hasNombre =
-      String(base.nombre ?? "").trim() ||
-      String(base.apellido ?? "").trim() ||
-      String(base.nombre_completo ?? "").trim() ||
-      String(base.nombre_y_apellido ?? "").trim();
-    if (hasNombre) return base;
-    const { data, error } = await supabase
-      .from("chat_contacts")
-      .select("name")
-      .eq("empresa_id", empresaId)
-      .eq("id", cid)
-      .maybeSingle();
-    if (error || !data) return base;
-    const nm = String((data as { name?: string | null }).name ?? "").trim();
-    if (!nm) return base;
-    const out: Record<string, string> = { ...base };
-    const parts = nm.split(/\s+/).filter(Boolean);
-    if (!String(out.nombre_completo ?? "").trim()) out.nombre_completo = nm;
-    if (!String(out.nombre ?? "").trim()) {
-      out.nombre = parts.length >= 2 ? parts[0] : nm;
-    }
-    if (parts.length >= 2 && !String(out.apellido ?? "").trim()) {
-      out.apellido = parts.slice(1).join(" ");
-    }
-    return out;
   }
 
   function interpolateTemplate(
@@ -4142,11 +4146,9 @@ export function createFlowEngine(ctx: FlowEngineContext) {
         filled_keys: histMerge.filledKeys.slice(0, 40),
       });
 
-      hydFdImg = await hydrateSorteoFlowDataFromChatContact(
-        state.empresa_id,
-        state.contact_id,
-        hydFdImg
-      );
+      // No se completa el nombre del participante con el nombre del contacto de WhatsApp:
+      // en compras para terceros ese nombre es el del comprador, no el del beneficiario.
+      // La identidad debe venir de los datos cargados en esta compra.
 
       const trimFd = (s: string | undefined) => (s ?? "").trim();
       if (!trimFd(hydFdImg[SORTEO_COMPROBANTE_URL_FIELD])) {
