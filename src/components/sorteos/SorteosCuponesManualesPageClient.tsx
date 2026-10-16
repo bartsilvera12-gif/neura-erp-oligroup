@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
 import SorteoCuponManualForm, { useSorteosCuponManual } from "@/components/sorteos/SorteoCuponManualForm";
+import SorteoReimprimirMisVentas from "@/components/sorteos/SorteoReimprimirMisVentas";
 
 /** Acceso directo (sidebar) al mismo formulario de "Crear cupón manual". */
 export default function SorteosCuponesManualesPageClient() {
   const searchParams = useSearchParams();
   const sorteoFromUrl = searchParams?.get("sorteo_id")?.trim() ?? "";
 
+  const [mode, setMode] = useState<"nueva" | "reimprimir">("nueva");
   const [pickedSorteoId, setSorteoId] = useState<string | null>(null);
   const { sorteos, loadErr, loadingSorteos } = useSorteosCuponManual(true);
 
@@ -18,6 +20,41 @@ export default function SorteosCuponesManualesPageClient() {
 
   return (
     <div className="space-y-6">
+      {/* Pestañas: Nueva venta vs Reimprimir una venta ya hecha. */}
+      <div className="flex w-full gap-1 rounded-2xl border border-[#4FAEB2]/45 bg-white p-1.5 shadow-sm sm:w-fit">
+        <button
+          type="button"
+          onClick={() => setMode("nueva")}
+          className={`flex-1 rounded-xl px-4 py-2 text-sm font-semibold transition-colors sm:flex-none ${
+            mode === "nueva"
+              ? "bg-[#4FAEB2] text-white shadow-md shadow-[#4FAEB2]/30"
+              : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+          }`}
+        >
+          Nueva venta
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("reimprimir")}
+          className={`flex-1 rounded-xl px-4 py-2 text-sm font-semibold transition-colors sm:flex-none ${
+            mode === "reimprimir"
+              ? "bg-[#4FAEB2] text-white shadow-md shadow-[#4FAEB2]/30"
+              : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+          }`}
+        >
+          Reimprimir
+        </button>
+      </div>
+
+      {mode === "reimprimir" ? (
+        <div className="w-full rounded-2xl border border-[#4FAEB2]/45 bg-white shadow-sm sm:max-w-lg">
+          <div className="border-b border-slate-200 px-4 py-3 sm:px-5">
+            <h2 className="text-base font-semibold text-slate-800 sm:text-lg">Reimprimir una boleta</h2>
+          </div>
+          <SorteoReimprimirMisVentas />
+        </div>
+      ) : (
+        <>
       <div className="rounded-2xl border border-[#4FAEB2]/45 bg-white p-4 shadow-sm sm:p-5">
         <label className="flex flex-col gap-1.5">
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Sorteo</span>
@@ -55,6 +92,8 @@ export default function SorteosCuponesManualesPageClient() {
           <SorteoCuponManualForm key={sorteoId} sorteos={sorteos} sorteoId={sorteoId} />
         </div>
       ) : null}
+        </>
+      )}
     </div>
   );
 }
