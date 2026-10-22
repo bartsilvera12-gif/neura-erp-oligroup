@@ -69,6 +69,8 @@ export default function TicketConfirmacionModal({
   precioBoleto = null,
 }: Props) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  /** Una imagen por boleta (multi-cupón). En ventas de 1 boleta, trae esa sola. */
+  const [ticketImages, setTicketImages] = useState<{ cupon: string | null; url: string }[]>([]);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [envio, setEnvio] = useState<Envio>({ estado: "idle" });
@@ -190,6 +192,7 @@ export default function TicketConfirmacionModal({
   useEffect(() => {
     if (!open) {
       setSignedUrl(null);
+      setTicketImages([]);
       setLoadErr(null);
       setEnvio({ estado: "idle" });
       return;
@@ -206,7 +209,7 @@ export default function TicketConfirmacionModal({
         );
         const json = (await res.json()) as {
           success?: boolean;
-          data?: { url?: string };
+          data?: { url?: string; images?: { cupon: string | null; url: string }[] };
           error?: string;
         };
         if (cancelled) return;
@@ -216,6 +219,11 @@ export default function TicketConfirmacionModal({
           return;
         }
         setSignedUrl(url);
+        setTicketImages(
+          Array.isArray(json.data?.images) && json.data!.images!.length > 0
+            ? json.data!.images!
+            : [{ cupon: null, url }]
+        );
       } catch {
         if (!cancelled) setLoadErr("Error de red al cargar el ticket.");
       } finally {
@@ -248,16 +256,33 @@ export default function TicketConfirmacionModal({
   }, []);
 
   /**
-   * PNG. Es lo que consume el envío por WhatsApp: baja a la galería del teléfono, que es de
+   * PNG(s). Es lo que consume el envío por WhatsApp: baja a la galería del teléfono, que es de
    * donde el operador lo adjunta. Un PDF ahí caería en Documentos y rompería ese flujo.
+   *
+   * Con varias boletas baja UNA imagen por boleta (cada cupón tiene su PNG), con un nombre que
+   * incluye el número de cupón para distinguirlas. La descarga es escalonada: algunos
+   * navegadores cancelan descargas múltiples disparadas en el mismo instante.
    */
   const descargarTicket = useCallback(() => {
-    if (!signedUrl) return;
-    const dlUrl = `${signedUrl}${signedUrl.includes("?") ? "&" : "?"}download=${encodeURIComponent(
-      nombreArchivo
-    )}`;
-    dispararDescarga(dlUrl, nombreArchivo);
-  }, [signedUrl, nombreArchivo, dispararDescarga]);
+    const lista =
+      ticketImages.length > 0
+        ? ticketImages
+        : signedUrl
+          ? [{ cupon: null as string | null, url: signedUrl }]
+          : [];
+    if (lista.length === 0) return;
+    const multi = lista.length > 1;
+    lista.forEach((img, i) => {
+      const nombre =
+        multi && img.cupon
+          ? `ticket-orden-${numeroOrden ?? ""}-${img.cupon}.png`
+          : nombreArchivo;
+      const dlUrl = `${img.url}${img.url.includes("?") ? "&" : "?"}download=${encodeURIComponent(
+        nombre
+      )}`;
+      window.setTimeout(() => dispararDescarga(dlUrl, nombre), i * 450);
+    });
+  }, [ticketImages, signedUrl, nombreArchivo, numeroOrden, dispararDescarga]);
 
   /**
    * PDF de verdad, para archivar o mandar a imprimir. Se arma en el navegador con pdf-lib,
@@ -402,17 +427,22 @@ export default function TicketConfirmacionModal({
     if (envio.estado === "compartiendo") return;
     setEnvio({ estado: "compartiendo" });
 
+    const cantImgs = ticketImages.length > 0 ? ticketImages.length : signedUrl ? 1 : 0;
+
     /** Primero la descarga: si se abre wa.me antes, el navegador manda esta pestaña al fondo. */
-    if (signedUrl) descargarTicket();
+    if (cantImgs > 0) descargarTicket();
     abrirWaMe();
 
     setEnvio({
       estado: "ok",
-      mensaje: signedUrl
-        ? "Ticket descargado y chat abierto. Adjuntalo con 📎 → Galería."
-        : `Chat de ${telefonoCliente || "WhatsApp"} abierto con el mensaje y los números.`,
+      mensaje:
+        cantImgs > 1
+          ? `Se descargaron ${cantImgs} imágenes (una por boleta) y se abrió el chat. Adjuntá las ${cantImgs} con 📎 → Galería.`
+          : cantImgs === 1
+            ? "Ticket descargado y chat abierto. Adjuntalo con 📎 → Galería."
+            : `Chat de ${telefonoCliente || "WhatsApp"} abierto con el mensaje y los números.`,
     });
-  }, [envio.estado, signedUrl, descargarTicket, abrirWaMe, telefonoCliente]);
+  }, [envio.estado, ticketImages.length, signedUrl, descargarTicket, abrirWaMe, telefonoCliente]);
 
   const imprimir = useCallback(() => {
     /**
@@ -577,6 +607,13 @@ export default function TicketConfirmacionModal({
             <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
               La compra no tiene teléfono cargado: WhatsApp va a abrir sin el chat elegido y vas
               a tener que buscar el contacto.
+            </div>
+          ) : null}
+          {ticketImages.length > 1 ? (
+            <div className="mb-2 rounded-md border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-3 py-2 text-xs text-[#3F8E91]">
+              Esta venta tiene <b>{ticketImages.length} boletas</b>: al enviar por WhatsApp se
+              descargan las <b>{ticketImages.length} imágenes</b> (una por boleta). Adjuntalas todas
+              desde la galería.
             </div>
           ) : null}
           <p className="mb-2 text-[11px] leading-snug text-slate-500">
