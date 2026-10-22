@@ -184,6 +184,7 @@ const MENU_STRUCTURE: MenuItem[] = [
     children: [
       { label: "Revendedores", href: "/sorteos/revendedores", exactMatch: true },
       { label: "Tickets / Comprobantes", href: "/sorteos/tickets", exactMatch: true },
+      { label: "Comprobantes sin boleta", href: "/sorteos/comprobantes-sin-boleta", exactMatch: true },
     ],
   },
   /** Módulo propio: se puede otorgar sin dar acceso al resto de Sorteos (quien tenga `sorteos` lo ve igual, por alias). */
