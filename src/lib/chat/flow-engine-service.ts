@@ -52,6 +52,7 @@ import {
 } from "@/lib/sorteos/sorteo-order-from-chat";
 import { buildOrderResultFromEntradaId } from "@/lib/sorteos/sorteo-ticket-admin";
 import { parseMoneyPy } from "@/lib/sorteos/parse-money-py";
+import { isPromoVisibleNow } from "@/lib/sorteos/promo-window";
 import {
   getSorteoTicketDeliveryModeForSorteo,
   runSorteoTicketAfterFinalNodeMessage,
@@ -886,7 +887,14 @@ export function createFlowEngine(ctx: FlowEngineContext) {
       .eq("node_id", nodeId)
       .order("sort_order", { ascending: true });
     if (error) throw new Error(error.message);
-    return (data ?? []) as FlowOption[];
+    // Promos con ventana horaria: una opción con `option_payload.promo_ventana` fuera de su
+    // franja (hora de Paraguay) se oculta aquí, así ni se envía como botón ni se puede elegir
+    // (su monto promocional nunca llega a chat_flow_data → nunca al RPC de la orden).
+    // Las opciones sin ventana pasan sin cambios. El flujo debe conservar al menos una opción
+    // sin ventana (el menú/precio normal) para no quedar sin botones fuera de horario.
+    return (data ?? []).filter((o) =>
+      isPromoVisibleNow((o as FlowOption).option_payload)
+    ) as FlowOption[];
   }
 
   /**
