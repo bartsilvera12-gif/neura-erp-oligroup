@@ -37,6 +37,14 @@ type OptionSimpleDraft = {
   promo_nombre: string;
   precio_regular: string;
   opcion_label: string;
+  /** Promo con horario limitado: si está en `false` la opción se ve siempre (sin `promo_ventana`). */
+  ventana_on: boolean;
+  /** Días ISO 1..7 en que arranca la ventana (1 = lunes … 7 = domingo). */
+  ventana_dias: number[];
+  /** Hora de inicio "HH:MM" (hora de Paraguay). */
+  ventana_hora_inicio: string;
+  /** Duración en horas desde la hora de inicio. */
+  ventana_duracion_horas: string;
 };
 
 type FlowNodeBlock = {
@@ -259,6 +267,15 @@ function toSimpleDraftFromPayload(option: FlowNodeOption): OptionSimpleDraft {
   const p = option.option_payload ?? {};
   const regRaw =
     p.precio_regular ?? p.precio_regular_referencia ?? p.precio_lista ?? "";
+  const ventana =
+    p.promo_ventana && typeof p.promo_ventana === "object"
+      ? (p.promo_ventana as Record<string, unknown>)
+      : null;
+  const ventanaDias = Array.isArray(ventana?.dias)
+    ? (ventana!.dias as unknown[])
+        .map((d) => Math.trunc(Number(d)))
+        .filter((n) => Number.isFinite(n) && n >= 1 && n <= 7)
+    : [];
   return {
     cantidad: p.cantidad === undefined || p.cantidad === null ? "" : String(p.cantidad),
     producto: p.producto === undefined || p.producto === null ? "" : String(p.producto),
@@ -269,6 +286,12 @@ function toSimpleDraftFromPayload(option: FlowNodeOption): OptionSimpleDraft {
     /** Solo datos persistidos en payload; no copiar `option.label` (evita fusionar con «Texto del botón»). */
     opcion_label:
       p.opcion_label === undefined || p.opcion_label === null ? "" : String(p.opcion_label),
+    ventana_on: ventana != null && ventana.activa !== false,
+    ventana_dias: ventanaDias,
+    ventana_hora_inicio:
+      ventana && typeof ventana.hora_inicio === "string" ? ventana.hora_inicio : "18:00",
+    ventana_duracion_horas:
+      ventana && ventana.duracion_horas != null ? String(ventana.duracion_horas) : "24",
   };
 }
 
@@ -324,6 +347,21 @@ function buildPayloadFromSimple(
   }
   if (etiquetaInterna) base.opcion_label = etiquetaInterna;
   else delete base.opcion_label;
+
+  // Promo con horario limitado → `promo_ventana`. Apagado o sin días válidos = opción siempre visible.
+  const ventanaDias = (draft.ventana_dias ?? []).filter((n) => n >= 1 && n <= 7);
+  const ventanaDur = Number(draft.ventana_duracion_horas);
+  const ventanaHora = draft.ventana_hora_inicio.trim();
+  if (draft.ventana_on && ventanaDias.length > 0 && /^\d{1,2}:\d{2}$/.test(ventanaHora)) {
+    base.promo_ventana = {
+      activa: true,
+      dias: [...new Set(ventanaDias)].sort((a, b) => a - b),
+      hora_inicio: ventanaHora,
+      duracion_horas: Number.isFinite(ventanaDur) && ventanaDur > 0 ? ventanaDur : 24,
+    };
+  } else {
+    delete base.promo_ventana;
+  }
 
   return base;
 }
@@ -2635,6 +2673,115 @@ export default function FlowEditorPage() {
                                 }
                                 placeholder="60000"
                               />
+                            </div>
+                            <div className="md:col-span-4 border-t border-slate-100 pt-2 mt-1">
+                              <label className="flex items-center gap-2 text-sm text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={
+                                    (optionSimpleDrafts[opt.id] ?? toSimpleDraftFromPayload(opt)).ventana_on
+                                  }
+                                  onChange={(e) =>
+                                    setOptionSimpleDrafts((prev) => ({
+                                      ...prev,
+                                      [opt.id]: {
+                                        ...(prev[opt.id] ?? toSimpleDraftFromPayload(opt)),
+                                        ventana_on: e.target.checked,
+                                      },
+                                    }))
+                                  }
+                                />
+                                Promo con horario limitado
+                              </label>
+                              {(optionSimpleDrafts[opt.id] ?? toSimpleDraftFromPayload(opt)).ventana_on && (
+                                <div className="mt-2 grid md:grid-cols-4 gap-3">
+                                  <div className="md:col-span-4">
+                                    <label className="block text-[11px] text-slate-500 mb-1">Días</label>
+                                    <div className="flex flex-wrap gap-1">
+                                      {[
+                                        { d: 1, t: "Lun" },
+                                        { d: 2, t: "Mar" },
+                                        { d: 3, t: "Mié" },
+                                        { d: 4, t: "Jue" },
+                                        { d: 5, t: "Vie" },
+                                        { d: 6, t: "Sáb" },
+                                        { d: 7, t: "Dom" },
+                                      ].map(({ d, t }) => {
+                                        const draft = optionSimpleDrafts[opt.id] ?? toSimpleDraftFromPayload(opt);
+                                        const on = draft.ventana_dias.includes(d);
+                                        return (
+                                          <button
+                                            key={d}
+                                            type="button"
+                                            onClick={() =>
+                                              setOptionSimpleDrafts((prev) => {
+                                                const cur = prev[opt.id] ?? toSimpleDraftFromPayload(opt);
+                                                const dias = cur.ventana_dias.includes(d)
+                                                  ? cur.ventana_dias.filter((x) => x !== d)
+                                                  : [...cur.ventana_dias, d].sort((a, b) => a - b);
+                                                return { ...prev, [opt.id]: { ...cur, ventana_dias: dias } };
+                                              })
+                                            }
+                                            className={`px-2 py-1 rounded-lg text-xs border ${
+                                              on
+                                                ? "bg-emerald-600 text-white border-emerald-600"
+                                                : "bg-white text-slate-600 border-slate-200"
+                                            }`}
+                                          >
+                                            {t}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[11px] text-slate-500 mb-1">Hora de inicio</label>
+                                    <input
+                                      type="time"
+                                      className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"
+                                      value={
+                                        (optionSimpleDrafts[opt.id] ?? toSimpleDraftFromPayload(opt))
+                                          .ventana_hora_inicio
+                                      }
+                                      onChange={(e) =>
+                                        setOptionSimpleDrafts((prev) => ({
+                                          ...prev,
+                                          [opt.id]: {
+                                            ...(prev[opt.id] ?? toSimpleDraftFromPayload(opt)),
+                                            ventana_hora_inicio: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <label className="block text-[11px] text-slate-500 mb-1">Duración (horas)</label>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm w-full"
+                                      value={
+                                        (optionSimpleDrafts[opt.id] ?? toSimpleDraftFromPayload(opt))
+                                          .ventana_duracion_horas
+                                      }
+                                      onChange={(e) =>
+                                        setOptionSimpleDrafts((prev) => ({
+                                          ...prev,
+                                          [opt.id]: {
+                                            ...(prev[opt.id] ?? toSimpleDraftFromPayload(opt)),
+                                            ventana_duracion_horas: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                  <p className="md:col-span-4 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                                    Fuera de este horario (hora de Paraguay) el botón no se muestra ni se
+                                    puede elegir. Dejá siempre otra opción sin horario (el menú/precio
+                                    normal) para que el cliente tenga qué elegir el resto del tiempo.
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           </div>
                           )

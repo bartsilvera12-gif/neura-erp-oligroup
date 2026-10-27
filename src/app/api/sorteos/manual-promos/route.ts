@@ -4,6 +4,7 @@ import { getTenantSupabaseFromAuth } from "@/lib/supabase/tenant-api";
 import { successResponse, errorResponse } from "@/lib/api/response";
 import { API_ERRORS } from "@/lib/api/errors";
 import { buildManualPromos, type FlowOptionRow } from "@/lib/sorteos/manual-promos";
+import { isPromoVisibleNow } from "@/lib/sorteos/promo-window";
 
 export const dynamic = "force-dynamic";
 
@@ -79,7 +80,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(errorResponse(errOpc.message), { status: 400 });
     }
 
-    return NextResponse.json(successResponse(buildManualPromos((opciones ?? []) as FlowOptionRow[])));
+    // Respeta la ventana horaria (`option_payload.promo_ventana`): una promo fuera de su franja
+    // no se lista, igual que no se le muestra al cliente en el chat.
+    const visibles = ((opciones ?? []) as FlowOptionRow[]).filter((o) =>
+      isPromoVisibleNow(o.option_payload)
+    );
+
+    return NextResponse.json(successResponse(buildManualPromos(visibles)));
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Error";
     return NextResponse.json(errorResponse(msg), { status: 500 });
