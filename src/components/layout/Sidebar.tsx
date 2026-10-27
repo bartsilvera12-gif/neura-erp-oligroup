@@ -182,6 +182,7 @@ const MENU_STRUCTURE: MenuItem[] = [
     href: "/sorteos",
     icon: Ticket,
     children: [
+      { label: "Promociones", href: "/sorteos/promociones", exactMatch: true },
       { label: "Revendedores", href: "/sorteos/revendedores", exactMatch: true },
       { label: "Tickets / Comprobantes", href: "/sorteos/tickets", exactMatch: true },
       { label: "Comprobantes sin boleta", href: "/sorteos/comprobantes-sin-boleta", exactMatch: true },
