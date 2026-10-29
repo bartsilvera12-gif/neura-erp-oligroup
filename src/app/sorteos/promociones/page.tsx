@@ -60,25 +60,27 @@ function enVivoAhora(p: Promo): boolean {
   });
 }
 
+/** Un combo = un botón del bot (texto + cantidad + precio). */
+type ComboRow = { label: string; cantidad: string; monto: string };
+
 type FormState = {
+  /** Si está, se está editando ESE botón (un solo combo); si es null, es alta (varios combos). */
   optionId: string | null;
-  label: string;
-  cantidad: string;
-  monto: string;
+  combos: ComboRow[];
   dias: number[];
   horaInicio: string;
   duracionHoras: string;
 };
 
-const EMPTY_FORM: FormState = {
-  optionId: null,
-  label: "",
-  cantidad: "",
-  monto: "",
-  dias: [],
-  horaInicio: "18:00",
-  duracionHoras: "24",
-};
+function emptyForm(): FormState {
+  return {
+    optionId: null,
+    combos: [{ label: "", cantidad: "", monto: "" }],
+    dias: [],
+    horaInicio: "18:00",
+    duracionHoras: "24",
+  };
+}
 
 export default function PromocionesPage() {
   const [data, setData] = useState<PromosData | null>(null);
@@ -114,40 +116,81 @@ export default function PromocionesPage() {
     void cargar();
   }, [cargar]);
 
-  const startNew = () => setForm({ ...EMPTY_FORM });
+  const startNew = () => setForm(emptyForm());
   const startEdit = (p: Promo) =>
     setForm({
       optionId: p.optionId,
-      label: p.label,
-      cantidad: p.cantidad != null ? String(p.cantidad) : "",
-      monto: p.monto != null ? String(p.monto) : "",
+      combos: [
+        {
+          label: p.label,
+          cantidad: p.cantidad != null ? String(p.cantidad) : "",
+          monto: p.monto != null ? String(p.monto) : "",
+        },
+      ],
       dias: p.dias,
       horaInicio: p.horaInicio,
       duracionHoras: String(p.duracionHoras),
     });
+
+  const addCombo = () =>
+    setForm((f) => (f ? { ...f, combos: [...f.combos, { label: "", cantidad: "", monto: "" }] } : f));
+  const removeCombo = (i: number) =>
+    setForm((f) => (f && f.combos.length > 1 ? { ...f, combos: f.combos.filter((_, idx) => idx !== i) } : f));
+  const updateCombo = (i: number, field: keyof ComboRow, value: string) =>
+    setForm((f) =>
+      f ? { ...f, combos: f.combos.map((c, idx) => (idx === i ? { ...c, [field]: value } : c)) } : f
+    );
+
+  /** Envía un combo (crear si no hay optionId, editar si lo hay). Devuelve mensaje de error o null. */
+  const postCombo = async (row: ComboRow, activa: boolean, optionId?: string): Promise<string | null> => {
+    if (!form) return "Sin formulario";
+    const res = await fetchWithSupabaseSession("/api/sorteos/promos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        optionId: optionId ?? undefined,
+        label: row.label.trim(),
+        cantidad: Number(row.cantidad),
+        monto: Number(row.monto),
+        dias: form.dias,
+        hora_inicio: form.horaInicio,
+        duracion_horas: Number(form.duracionHoras),
+        activa,
+      }),
+    });
+    const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+    if (!res.ok || !json.success) {
+      return json.error?.trim() || `No se pudo guardar "${row.label}" (${res.status})`;
+    }
+    return null;
+  };
 
   const guardar = async (activa: boolean) => {
     if (!form) return;
     setSaving(true);
     setErr(null);
     try {
-      const res = await fetchWithSupabaseSession("/api/sorteos/promos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          optionId: form.optionId ?? undefined,
-          label: form.label,
-          cantidad: Number(form.cantidad),
-          monto: Number(form.monto),
-          dias: form.dias,
-          hora_inicio: form.horaInicio,
-          duracion_horas: Number(form.duracionHoras),
-          activa,
-        }),
-      });
-      const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
-      if (!res.ok || !json.success) {
-        throw new Error(json.error?.trim() || `No se pudo guardar (${res.status})`);
+      if (form.dias.filter((d) => d >= 1 && d <= 7).length === 0) {
+        throw new Error("Elegí al menos un día.");
+      }
+      // Combos válidos (texto + cantidad + precio). Las filas vacías se ignoran.
+      const validos = form.combos.filter(
+        (c) => c.label.trim() && Number(c.cantidad) >= 1 && Number(c.monto) > 0
+      );
+      if (validos.length === 0) {
+        throw new Error("Cargá al menos un combo con texto, cantidad y precio.");
+      }
+
+      if (form.optionId) {
+        // Edición: un solo combo.
+        const e = await postCombo(validos[0], activa, form.optionId);
+        if (e) throw new Error(e);
+      } else {
+        // Alta: un botón por combo (todos con el mismo horario).
+        for (const row of validos) {
+          const e = await postCombo(row, activa);
+          if (e) throw new Error(e);
+        }
       }
       setForm(null);
       await cargar();
@@ -376,7 +419,7 @@ export default function PromocionesPage() {
       {/* Formulario alta/edición */}
       {form ? (
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-slate-900/40 p-0 sm:items-center sm:p-4">
-          <div className="w-full max-w-lg rounded-t-2xl bg-white p-5 shadow-xl sm:rounded-2xl">
+          <div className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-2xl bg-white p-5 shadow-xl sm:rounded-2xl">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">
                 {form.optionId ? "Editar promo" : "Nueva promo"}
@@ -390,83 +433,121 @@ export default function PromocionesPage() {
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2">
-                <label className="mb-1 block text-[11px] font-medium text-slate-500">Texto del botón</label>
-                <input
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-                  value={form.label}
-                  onChange={(e) => setForm({ ...form, label: e.target.value })}
-                  placeholder="7 boletas 50.000"
-                  maxLength={24}
-                />
-                <p className="mt-0.5 text-[10px] text-slate-400">
-                  Lo que ve el cliente en el botón de WhatsApp (corto, máx. ~20-24 caracteres).
-                </p>
-              </div>
-              <div>
-                <label className="mb-1 block text-[11px] font-medium text-slate-500">Cantidad de boletas</label>
-                <input
-                  type="number"
-                  min={1}
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-                  value={form.cantidad}
-                  onChange={(e) => setForm({ ...form, cantidad: e.target.value })}
-                  placeholder="7"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-[11px] font-medium text-slate-500">Precio total (Gs.)</label>
-                <input
-                  type="number"
-                  min={1}
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-                  value={form.monto}
-                  onChange={(e) => setForm({ ...form, monto: e.target.value })}
-                  placeholder="50000"
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="mb-1 block text-[11px] font-medium text-slate-500">Días</label>
-                <div className="flex flex-wrap gap-1">
-                  {DIAS.map(({ d, t }) => {
-                    const on = form.dias.includes(d);
-                    return (
+            <div className="space-y-3">
+              {/* Combos: uno o varios botones, cada uno con su cantidad y precio. */}
+              {form.combos.map((c, i) => (
+                <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                  {!form.optionId && form.combos.length > 1 ? (
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-[11px] font-semibold text-slate-500">Combo {i + 1}</span>
                       <button
-                        key={d}
                         type="button"
-                        onClick={() => toggleDia(d)}
-                        className={`rounded-lg border px-2.5 py-1 text-xs ${
-                          on
-                            ? "border-[#3F8E91] bg-[#3F8E91] text-white"
-                            : "border-slate-200 bg-white text-slate-600"
-                        }`}
+                        onClick={() => removeCombo(i)}
+                        className="rounded-lg px-2 py-0.5 text-[11px] font-semibold text-rose-600 hover:bg-rose-50"
                       >
-                        {t}
+                        Quitar
                       </button>
-                    );
-                  })}
+                    </div>
+                  ) : null}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="col-span-2">
+                      <label className="mb-1 block text-[11px] font-medium text-slate-500">Texto del botón</label>
+                      <input
+                        className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+                        value={c.label}
+                        onChange={(e) => updateCombo(i, "label", e.target.value)}
+                        placeholder="7 boletas 50.000"
+                        maxLength={24}
+                      />
+                      <p className="mt-0.5 text-[10px] text-slate-400">
+                        Lo que ve el cliente en el botón de WhatsApp (corto, máx. ~20-24 caracteres).
+                      </p>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-slate-500">Cantidad de boletas</label>
+                      <input
+                        type="number"
+                        min={1}
+                        className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+                        value={c.cantidad}
+                        onChange={(e) => updateCombo(i, "cantidad", e.target.value)}
+                        placeholder="7"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-slate-500">Precio total (Gs.)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+                        value={c.monto}
+                        onChange={(e) => updateCombo(i, "monto", e.target.value)}
+                        placeholder="50000"
+                      />
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div>
-                <label className="mb-1 block text-[11px] font-medium text-slate-500">Hora de inicio</label>
-                <input
-                  type="time"
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-                  value={form.horaInicio}
-                  onChange={(e) => setForm({ ...form, horaInicio: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-[11px] font-medium text-slate-500">Duración (horas)</label>
-                <input
-                  type="number"
-                  min={1}
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
-                  value={form.duracionHoras}
-                  onChange={(e) => setForm({ ...form, duracionHoras: e.target.value })}
-                  placeholder="24"
-                />
+              ))}
+
+              {!form.optionId ? (
+                <button
+                  type="button"
+                  onClick={addCombo}
+                  className="w-full rounded-lg border border-dashed border-[#4FAEB2]/60 bg-[#4FAEB2]/5 px-3 py-2 text-xs font-semibold text-[#3F8E91] hover:bg-[#4FAEB2]/10"
+                >
+                  + Agregar otro combo
+                </button>
+              ) : null}
+
+              {/* Horario: compartido por todos los combos de esta promo. */}
+              <div className="rounded-xl border border-slate-200 p-3">
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Horario {form.optionId ? "" : "(para todos los combos)"}
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="mb-1 block text-[11px] font-medium text-slate-500">Días</label>
+                    <div className="flex flex-wrap gap-1">
+                      {DIAS.map(({ d, t }) => {
+                        const on = form.dias.includes(d);
+                        return (
+                          <button
+                            key={d}
+                            type="button"
+                            onClick={() => toggleDia(d)}
+                            className={`rounded-lg border px-2.5 py-1 text-xs ${
+                              on
+                                ? "border-[#3F8E91] bg-[#3F8E91] text-white"
+                                : "border-slate-200 bg-white text-slate-600"
+                            }`}
+                          >
+                            {t}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-slate-500">Hora de inicio</label>
+                    <input
+                      type="time"
+                      className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+                      value={form.horaInicio}
+                      onChange={(e) => setForm({ ...form, horaInicio: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-slate-500">Duración (horas)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm"
+                      value={form.duracionHoras}
+                      onChange={(e) => setForm({ ...form, duracionHoras: e.target.value })}
+                      placeholder="24"
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 
