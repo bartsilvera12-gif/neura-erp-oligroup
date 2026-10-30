@@ -152,6 +152,15 @@ const formatGs = (n: number) => new Intl.NumberFormat("es-PY").format(Math.round
 /** Opción "otro monto": habilita la carga libre de cantidad (total = cantidad × precio del sorteo). */
 const MANUAL_PROMO_ID = "__manual__";
 
+/**
+ * Umbrales de "venta grande": por encima de cualquiera de estos, el formulario pide una
+ * confirmación extra antes de guardar. Evita que se registre por error una promo cara
+ * elegida sin querer (p. ej. "100 x 1.000.000" en vez de la de 20.000). Las ventas chicas
+ * del día a día (1 a 10 boletas) no se tocan.
+ */
+const VENTA_GRANDE_BOLETAS = 20;
+const VENTA_GRANDE_MONTO = 200000;
+
 const EMPTY_FIELDS = {
   nombre: "",
   apellido: "",
@@ -217,6 +226,8 @@ export default function SorteoCuponManualForm({
   const promoSel = useMemo(() => promos.find((p) => p.id === promoId) ?? null, [promos, promoId]);
   /** Modo manual: no hay promos, o el vendedor eligió "Otro monto". */
   const modoManual = promoId === MANUAL_PROMO_ID || promos.length === 0;
+  /** Venta grande pendiente de confirmar (cantidad + monto), o `null` si no hay cartel abierto. */
+  const [confirmGrande, setConfirmGrande] = useState<{ cantidad: number; monto: number } | null>(null);
 
   /**
    * Total a cobrar:
@@ -253,6 +264,7 @@ export default function SorteoCuponManualForm({
     setOkOrden(null);
     setTicketOpen(false);
     setPromoId("");
+    setConfirmGrande(null);
   }, [resetSignal]);
 
   /** Elegir una promo completa la cantidad; el monto sale de la promo o del precio del sorteo. */
@@ -325,6 +337,24 @@ export default function SorteoCuponManualForm({
       return;
     }
 
+    /**
+     * Guard anti "dedo gordo": una venta grande (muchas boletas o monto alto) pide una
+     * confirmación extra antes de guardarse, para que no se registre por error una promo
+     * cara elegida sin querer (p. ej. "100 x 1.000.000" en vez de la de 20.000).
+     */
+    if (cantidad >= VENTA_GRANDE_BOLETAS || monto >= VENTA_GRANDE_MONTO) {
+      setConfirmGrande({ cantidad, monto });
+      return;
+    }
+
+    await doSave();
+  }
+
+  /** Alta efectiva de la venta. Separada de onSubmit para poder llamarla también tras confirmar una venta grande. */
+  async function doSave() {
+    const cantidad = Math.floor(Number(form.cantidad_boletos));
+    const monto = montoFinal;
+    setConfirmGrande(null);
     setLoading(true);
     try {
       const res = await fetchWithSupabaseSession("/api/sorteos/manual-sale", {
@@ -721,6 +751,53 @@ export default function SorteoCuponManualForm({
           </button>
         ) : null}
       </div>
+
+      {confirmGrande ? (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="venta-grande-dialog-title"
+          onClick={() => {
+            if (!loading) setConfirmGrande(null);
+          }}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="venta-grande-dialog-title" className="text-base font-semibold text-slate-800">
+              ¿Confirmás esta venta?
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Vas a registrar{" "}
+              <strong>
+                {confirmGrande.cantidad} {confirmGrande.cantidad === 1 ? "boleta" : "boletas"}
+              </strong>{" "}
+              por <strong>Gs. {formatGs(confirmGrande.monto)}</strong>. Revisá que sea correcto
+              antes de guardar.
+            </p>
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void doSave()}
+                className="rounded-lg bg-[#4FAEB2] px-4 py-2 text-sm font-medium text-white hover:bg-[#3F8E91] disabled:opacity-60"
+              >
+                {loading ? "Guardando…" : "Sí, registrar"}
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => setConfirmGrande(null)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                Revisar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <TicketConfirmacionModal
         open={ticketOpen}
