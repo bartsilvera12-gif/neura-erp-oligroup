@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import TicketConfirmacionModal from "@/components/sorteos/TicketConfirmacionModal";
+import type { ManualPromo } from "@/lib/sorteos/manual-promos";
 
 /**
  * Única implementación del alta manual de cupones (venta presencial efectivo).
@@ -96,6 +97,43 @@ export function useSorteosCuponManual(enabled: boolean) {
   return { sorteos, loadErr, loadingSorteos };
 }
 
+/**
+ * Promos que ofrece el bot (GET /api/sorteos/manual-promos). El vendedor elige la misma
+ * opción que vería el cliente en WhatsApp y de ahí salen cantidad y monto, en vez de
+ * tipearlos: así cobra exactamente lo mismo que el bot. Si el flujo no tiene promos, la
+ * lista vuelve vacía y el formulario cae a carga manual (cantidad × precio del sorteo).
+ */
+export function usePromosCuponManual(enabled: boolean) {
+  const [promos, setPromos] = useState<ManualPromo[]>([]);
+  const [loadingPromos, setLoadingPromos] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingPromos(true);
+      try {
+        const res = await fetchWithSupabaseSession("/api/sorteos/manual-promos", {
+          cache: "no-store",
+        });
+        const json = (await res.json()) as { success?: boolean; data?: ManualPromo[] };
+        if (!cancelled && res.ok && json.success && Array.isArray(json.data)) {
+          setPromos(json.data);
+        }
+      } catch {
+        /* sin promos: el formulario cae a carga manual */
+      } finally {
+        if (!cancelled) setLoadingPromos(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  return { promos, loadingPromos };
+}
+
 type Props = {
   sorteos: SorteoListItem[];
   sorteoId: string;
@@ -110,6 +148,9 @@ type Props = {
 };
 
 const formatGs = (n: number) => new Intl.NumberFormat("es-PY").format(Math.round(n || 0));
+
+/** Opción "otro monto": habilita la carga libre de cantidad (total = cantidad × precio del sorteo). */
+const MANUAL_PROMO_ID = "__manual__";
 
 const EMPTY_FIELDS = {
   nombre: "",
@@ -170,9 +211,17 @@ export default function SorteoCuponManualForm({
     precioBoleto: null,
   });
 
+  const { promos, loadingPromos } = usePromosCuponManual(true);
+  /** `""` = ninguna promo elegida todavía; `MANUAL` = carga libre de cantidad. */
+  const [promoId, setPromoId] = useState("");
+  const promoSel = useMemo(() => promos.find((p) => p.id === promoId) ?? null, [promos, promoId]);
+  /** Modo manual: no hay promos, o el vendedor eligió "Otro monto". */
+  const modoManual = promoId === MANUAL_PROMO_ID || promos.length === 0;
+
   /**
-   * Venta manual: el operador carga la cantidad y el total se calcula solo (cantidad × precio del
-   * sorteo). No se usan promos: el monto no se escribe a mano.
+   * Total a cobrar:
+   * - Promo con monto fijo → se cobra el monto de la promo (el precio que ve el cliente en el chat).
+   * - Promo a precio de lista o carga manual → cantidad × precio del sorteo.
    */
   const sorteoSel = useMemo(() => sorteos.find((s) => s.id === sorteoId) ?? null, [sorteos, sorteoId]);
   const precioUnitario = useMemo(() => {
@@ -183,10 +232,17 @@ export default function SorteoCuponManualForm({
     const n = Math.floor(Number(form.cantidad_boletos));
     return Number.isFinite(n) && n > 0 ? n : 0;
   }, [form.cantidad_boletos]);
+  /** Monto fijo de la promo elegida (si la promo trae precio propio), redondeado. */
+  const promoMontoFijo = useMemo(
+    () => (promoSel && promoSel.monto != null ? Math.round(promoSel.monto) : null),
+    [promoSel]
+  );
   const totalCalculado = useMemo(
     () => Math.round(precioUnitario * cantidadNum),
     [precioUnitario, cantidadNum]
   );
+  /** Lo que realmente se cobra y se envía al backend. */
+  const montoFinal = promoMontoFijo != null ? promoMontoFijo : totalCalculado;
 
   useEffect(() => {
     setIdempotencyKey(crypto.randomUUID());
@@ -196,7 +252,21 @@ export default function SorteoCuponManualForm({
     setOkDeliveryId(null);
     setOkOrden(null);
     setTicketOpen(false);
+    setPromoId("");
   }, [resetSignal]);
+
+  /** Elegir una promo completa la cantidad; el monto sale de la promo o del precio del sorteo. */
+  const onPromoChange = useCallback(
+    (id: string) => {
+      setPromoId(id);
+      setSubmitErr(null);
+      if (id === MANUAL_PROMO_ID || !id) return;
+      const p = promos.find((x) => x.id === id);
+      if (!p) return;
+      setForm((prev) => ({ ...prev, cantidad_boletos: String(p.cantidad) }));
+    },
+    [promos]
+  );
 
   const onField = useCallback(
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -220,9 +290,13 @@ export default function SorteoCuponManualForm({
     setOkOrden(null);
 
     const cantidad = Math.floor(Number(form.cantidad_boletos));
-    const monto = totalCalculado;
+    const monto = montoFinal;
     if (!sorteoId) {
       setSubmitErr("Elegí un sorteo.");
+      return;
+    }
+    if (promos.length > 0 && !promoId) {
+      setSubmitErr("Elegí una promo (o “Otro monto” para cargar la cantidad a mano).");
       return;
     }
     if (!form.nombre.trim() || !form.apellido.trim()) {
@@ -237,7 +311,8 @@ export default function SorteoCuponManualForm({
       setSubmitErr("La cantidad de boletos debe ser mayor a 0.");
       return;
     }
-    if (precioUnitario <= 0) {
+    /** Sin monto fijo de promo, el total sale del precio del sorteo: sin precio no se puede calcular. */
+    if (promoMontoFijo == null && precioUnitario <= 0) {
       setSubmitErr("El sorteo no tiene un precio por boleto configurado. Cargalo en el sorteo para calcular el total.");
       return;
     }
@@ -268,7 +343,7 @@ export default function SorteoCuponManualForm({
           generar_ticket_png: form.generar_ticket_png,
           idempotency_key: idempotencyKey,
           codigo_verificador: form.codigo_verificador.trim() || null,
-          promo_nombre: null,
+          promo_nombre: promoSel?.label ?? null,
           metodo_pago: form.metodo_pago === "transferencia" ? "transferencia" : "efectivo",
         }),
       });
@@ -340,6 +415,7 @@ export default function SorteoCuponManualForm({
        */
       setTicketOpen(true);
       setForm((p) => ({ ...p, ...EMPTY_FIELDS }));
+      setPromoId("");
       // Venta registrada: la próxima carga es otra venta (misma clave devolvería esta orden).
       setIdempotencyKey(crypto.randomUUID());
       router.refresh();
@@ -472,37 +548,108 @@ export default function SorteoCuponManualForm({
         />
       </label>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-2">
-        <label className="flex flex-col gap-1 text-xs text-slate-600">
-          Cantidad de boletas *
-          <input
-            name="cantidad_boletos"
-            type="number"
-            min={1}
-            step={1}
-            value={form.cantidad_boletos}
-            onChange={onField}
-            required
-            inputMode="numeric"
-            className="border border-slate-300 rounded px-3 py-2.5 text-base sm:px-2 sm:py-2 sm:text-sm"
-          />
-        </label>
-        <div className="flex flex-col gap-1 text-xs text-slate-600">
-          Total a cobrar (₲)
-          <div className="flex items-center justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2.5 sm:px-2 sm:py-2">
-            <span className="text-base font-semibold tabular-nums text-slate-900">
-              Gs. {formatGs(totalCalculado)}
-            </span>
-            {precioUnitario > 0 ? (
-              <span className="text-[11px] text-slate-500">
-                {cantidadNum || 0} × {formatGs(precioUnitario)}
-              </span>
-            ) : (
-              <span className="text-[11px] text-amber-600">sin precio configurado</span>
-            )}
+      {/* Promos del bot: el vendedor cobra el mismo combo que ve el cliente en WhatsApp. */}
+      {loadingPromos && promos.length === 0 ? (
+        <p className="text-xs text-slate-500">Cargando promos…</p>
+      ) : null}
+
+      {promos.length > 0 ? (
+        <div className="flex flex-col gap-1.5 text-xs text-slate-600">
+          <span>Promo *</span>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {promos.map((p) => {
+              const sel = p.id === promoId;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => onPromoChange(p.id)}
+                  aria-pressed={sel}
+                  className={`flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                    sel
+                      ? "border-[#4FAEB2] bg-[#4FAEB2]/10 text-slate-900 ring-2 ring-[#4FAEB2]/25"
+                      : "border-slate-200 bg-white text-slate-700 hover:border-[#4FAEB2]/60"
+                  }`}
+                >
+                  <span className="text-sm font-semibold leading-tight">{p.label}</span>
+                  <span className="text-[11px] text-slate-500">
+                    {p.cantidad} {p.cantidad === 1 ? "boleta" : "boletas"}
+                    {p.monto != null ? ` · Gs. ${formatGs(p.monto)}` : " · precio de lista"}
+                  </span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => onPromoChange(MANUAL_PROMO_ID)}
+              aria-pressed={promoId === MANUAL_PROMO_ID}
+              className={`flex flex-col items-start gap-0.5 rounded-xl border border-dashed px-3 py-2.5 text-left transition-colors ${
+                promoId === MANUAL_PROMO_ID
+                  ? "border-[#4FAEB2] bg-[#4FAEB2]/10 text-slate-900 ring-2 ring-[#4FAEB2]/25"
+                  : "border-slate-300 bg-white text-slate-700 hover:border-[#4FAEB2]/60"
+              }`}
+            >
+              <span className="text-sm font-semibold leading-tight">Otro monto</span>
+              <span className="text-[11px] text-slate-500">Cargar la cantidad a mano</span>
+            </button>
           </div>
         </div>
-      </div>
+      ) : null}
+
+      {/* Carga manual (sin promos, o "Otro monto"): cantidad libre + total = cantidad × precio. */}
+      {modoManual ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-2">
+          <label className="flex flex-col gap-1 text-xs text-slate-600">
+            Cantidad de boletas *
+            <input
+              name="cantidad_boletos"
+              type="number"
+              min={1}
+              step={1}
+              value={form.cantidad_boletos}
+              onChange={onField}
+              required
+              inputMode="numeric"
+              className="border border-slate-300 rounded px-3 py-2.5 text-base sm:px-2 sm:py-2 sm:text-sm"
+            />
+          </label>
+          <div className="flex flex-col gap-1 text-xs text-slate-600">
+            Total a cobrar (₲)
+            <div className="flex items-center justify-between rounded border border-slate-200 bg-slate-50 px-3 py-2.5 sm:px-2 sm:py-2">
+              <span className="text-base font-semibold tabular-nums text-slate-900">
+                Gs. {formatGs(montoFinal)}
+              </span>
+              {precioUnitario > 0 ? (
+                <span className="text-[11px] text-slate-500">
+                  {cantidadNum || 0} × {formatGs(precioUnitario)}
+                </span>
+              ) : (
+                <span className="text-[11px] text-amber-600">sin precio configurado</span>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : promoSel ? (
+        /* Promo elegida: resumen de lo que se cobra (cantidad + total resuelto). */
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+          <div className="flex items-baseline justify-between gap-3">
+            <span>
+              {promoSel.cantidad} {promoSel.cantidad === 1 ? "boleta" : "boletas"}
+              {promoMontoFijo == null && precioUnitario > 0
+                ? ` · ${promoSel.cantidad} × ${formatGs(precioUnitario)}`
+                : ""}
+            </span>
+            <span className="text-base font-semibold tabular-nums text-slate-900">
+              Gs. {formatGs(montoFinal)}
+            </span>
+          </div>
+          {promoMontoFijo == null && precioUnitario <= 0 ? (
+            <p className="mt-1 text-[11px] text-amber-600">
+              El sorteo no tiene precio por boleto configurado; cargalo para calcular el total.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <label className="flex flex-col gap-1 text-xs text-slate-600">
         Método de pago
