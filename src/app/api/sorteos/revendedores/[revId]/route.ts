@@ -126,3 +126,48 @@ export async function PATCH(
     return NextResponse.json(errorResponse(msg), { status: 500 });
   }
 }
+
+/**
+ * DELETE /api/sorteos/revendedores/:revId — eliminar revendedor conservando su historial.
+ *
+ * Las FKs preservan las ventas: `sorteo_entradas.revendedor_id` (y las sesiones/conversaciones
+ * atribuidas) quedan en NULL por ON DELETE SET NULL; la venta conserva su `codigo_referido_snapshot`,
+ * sus cupones/boletas y su monto. Solo se borran los clics de métricas (ON DELETE CASCADE).
+ */
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ revId: string }> }
+) {
+  try {
+    const ctx = await getTenantSupabaseFromAuth(request);
+    if (!ctx) {
+      return NextResponse.json(errorResponse(API_ERRORS.UNAUTHORIZED), { status: 401 });
+    }
+    const empresaId = ctx.auth.empresa_id;
+    const { revId } = await params;
+    const id = revId.trim();
+    if (!id) {
+      return NextResponse.json(errorResponse("Revendedor inválido."), { status: 400 });
+    }
+
+    const sb = await getChatServiceClientForEmpresa(empresaId);
+    const { data, error } = await sb
+      .from("sorteo_revendedores")
+      .delete()
+      .eq("id", id)
+      .eq("empresa_id", empresaId)
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      return NextResponse.json(errorResponse(error.message), { status: 400 });
+    }
+    if (!data) {
+      return NextResponse.json(errorResponse("Revendedor no encontrado."), { status: 404 });
+    }
+    return NextResponse.json(successResponse({ id: (data as { id: string }).id, deleted: true }));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Error";
+    return NextResponse.json(errorResponse(msg), { status: 500 });
+  }
+}

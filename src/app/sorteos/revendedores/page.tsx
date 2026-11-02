@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
-import { createRevendedor } from "@/lib/sorteos/revendedores-actions";
+import { createRevendedor, deleteRevendedor } from "@/lib/sorteos/revendedores-actions";
 
 type SorteoLite = { id: string; nombre: string; estado: string };
 
@@ -179,6 +179,31 @@ export default function RevendedoresModulePage() {
       }
     },
     [sorteoId, creating, nNombre, nTelefono, nCodigo, nVerificador, load]
+  );
+
+  // Borrado de revendedor (conserva su historial de ventas/boletas en el servidor).
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const handleDelete = useCallback(
+    async (rev: RevRow) => {
+      if (deletingId) return;
+      const ok = window.confirm(
+        `¿Eliminar al revendedor "${rev.nombre || "(sin nombre)"}"?\n\n` +
+          `Sus ventas y boletas ya registradas se conservan (quedan sin vínculo a este revendedor). ` +
+          `Esta acción no se puede deshacer.`
+      );
+      if (!ok) return;
+      setDeletingId(rev.id);
+      setErr(null);
+      try {
+        await deleteRevendedor(rev.id);
+        await load(sorteoId);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "No se pudo eliminar el revendedor");
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, load, sorteoId]
   );
 
   // Descarga por revendedor: clave `${revId}:${format}` mientras genera.
@@ -518,6 +543,22 @@ export default function RevendedoresModulePage() {
                         >
                           Abrir
                         </a>
+                        <Link
+                          href={`/sorteos/${sorteoId}/revendedores/${rev.id}/editar`}
+                          title="Editar todos los datos del revendedor"
+                          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition-colors hover:border-[#4FAEB2]/60 hover:text-[#3F8E91]"
+                        >
+                          Editar
+                        </Link>
+                        <button
+                          type="button"
+                          disabled={deletingId !== null}
+                          onClick={() => void handleDelete(rev)}
+                          title="Eliminar revendedor (se conservan sus ventas y boletas)"
+                          className="rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-[11px] font-semibold text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-50"
+                        >
+                          {deletingId === rev.id ? "Eliminando…" : "Eliminar"}
+                        </button>
                       </div>
                     </td>
                   </tr>

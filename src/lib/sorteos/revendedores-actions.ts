@@ -137,6 +137,20 @@ export async function setRevendedorActivo(id: string, activo: boolean): Promise<
   }
 }
 
+/**
+ * Elimina un revendedor. El historial de ventas/boletas se conserva en el servidor
+ * (FK ON DELETE SET NULL sobre `sorteo_entradas`); solo se descarta la atribución.
+ */
+export async function deleteRevendedor(id: string): Promise<void> {
+  const res = await fetchWithSupabaseSession(`/api/sorteos/revendedores/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  const json = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || `${res.status}`);
+  }
+}
+
 export type RevendedorStats = {
   clicks: number;
   clicks_redeemed: number;
