@@ -44,7 +44,7 @@ import {
 import { INBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/chat/agent-presence";
 import { formatWaitHuman } from "@/lib/chat/format-wait-human";
 import { listActiveQuickRepliesForChannel } from "@/lib/chat/quick-replies-actions";
-import { ArrowLeftRight, Flame, Mic, Paperclip, RefreshCw, Square, UserRound, Zap } from "lucide-react";
+import { ArrowLeftRight, Flame, Mic, Paperclip, RefreshCw, RotateCcw, Square, UserRound, Zap } from "lucide-react";
 import {
   finalizeConversationWithClosure,
   loadFinalizeOptionsForConversation,
@@ -405,6 +405,7 @@ export function ConversacionesClient({
   const [releasingBot, setReleasingBot] = useState(false);
   const [resendFlowStepLoading, setResendFlowStepLoading] = useState(false);
   const [resendFlowNotice, setResendFlowNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [restartFlowLoading, setRestartFlowLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -1559,6 +1560,58 @@ export function ConversacionesClient({
     }
   }
 
+  async function handleRestartFlow() {
+    if (!selectedId || restartFlowLoading) return;
+    const sel = conversationsRef.current.find((c) => c.id === selectedId);
+    if (!sel || sel.status === "closed") return;
+
+    const ok = window.confirm(
+      "¿Reiniciar la compra de este cliente desde cero?\n\n" +
+        "Vuelve al inicio (bienvenida) con una sesión nueva: se descartan los datos cargados " +
+        "(cédula, nombre, comprobante) de la compra anterior. El cliente recibirá los botones de compra."
+    );
+    if (!ok) return;
+
+    setRestartFlowLoading(true);
+    setResendFlowNotice(null);
+    setSendError(null);
+    try {
+      const res = await fetchWithSupabaseSession(
+        `/api/chat/conversations/${encodeURIComponent(selectedId)}/restart-flow`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+      );
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        presented?: boolean;
+      };
+      if (!res.ok || !json.ok) {
+        const errMsg =
+          typeof json.error === "string" && json.error.trim()
+            ? json.error.trim()
+            : "No se pudo reiniciar el flujo. Revisá el estado del canal o los logs.";
+        setResendFlowNotice({ kind: "err", text: errMsg });
+        return;
+      }
+      setResendFlowNotice({
+        kind: "ok",
+        text:
+          json.presented === false
+            ? "Compra reiniciada (sesión nueva), pero no se pudo enviar la bienvenida: revisá el canal."
+            : "Compra reiniciada: el cliente volvió al inicio con una sesión nueva.",
+      });
+      await loadMessages(selectedId, { silent: true });
+      await loadConversations({ silent: true });
+    } catch {
+      setResendFlowNotice({
+        kind: "err",
+        text: "No se pudo reiniciar el flujo. Revisá el estado del canal o los logs.",
+      });
+    } finally {
+      setRestartFlowLoading(false);
+    }
+  }
+
   async function runConversationOp(fn: () => Promise<void>) {
     if (!selectedId || opsBusy) return;
     setOpsBusy(true);
@@ -1750,6 +1803,9 @@ export function ConversacionesClient({
       selected.status !== "closed" &&
       selected.flow_code?.trim() &&
       selected.flow_current_node?.trim()
+  );
+  const canRestartFlow = Boolean(
+    selected && selected.status !== "closed" && selected.flow_code?.trim()
   );
   const isHumanActive =
     !!selected && (selected.human_taken_over || selected.flow_status === "human");
@@ -2944,6 +3000,21 @@ export function ConversacionesClient({
                                   aria-hidden
                                 />
                                 {resendFlowStepLoading ? "Enviando…" : "Reenviar paso"}
+                              </button>
+                            ) : null}
+                            {canRestartFlow ? (
+                              <button
+                                type="button"
+                                disabled={restartFlowLoading || opsBusy}
+                                onClick={() => void handleRestartFlow()}
+                                title="Reinicia la compra desde el inicio con una sesión nueva (descarta los datos cargados). Para un cliente que ya compró y quiere empezar de nuevo."
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-semibold text-amber-800 shadow-sm transition-colors hover:bg-amber-100 disabled:opacity-50"
+                              >
+                                <RotateCcw
+                                  className={`h-3.5 w-3.5 shrink-0 ${restartFlowLoading ? "animate-spin" : ""}`}
+                                  aria-hidden
+                                />
+                                {restartFlowLoading ? "Reiniciando…" : "Reiniciar compra"}
                               </button>
                             ) : null}
                             {listColumnHidden ? (
