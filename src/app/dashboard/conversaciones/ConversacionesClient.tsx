@@ -2340,7 +2340,7 @@ export function ConversacionesClient({
 
       {!headerCollapsed ? (
       <>
-      <div className="flex flex-wrap items-center justify-between gap-3 shrink-0">
+      <div className={`flex flex-wrap items-center justify-between gap-3 shrink-0 ${selectedId ? "max-lg:hidden" : ""}`}>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span
@@ -2488,7 +2488,7 @@ export function ConversacionesClient({
       ) : null}
 
       {mode === "inbox" ? (
-        <div className="flex flex-wrap items-stretch gap-2 shrink-0 min-w-0">
+        <div className={`flex flex-wrap items-stretch gap-2 shrink-0 min-w-0 ${selectedId ? "max-lg:hidden" : ""}`}>
           <div className="flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-100/80 p-1 w-fit shrink-0 self-center">
             <button type="button" className={tabClass(vista === "inbox")} onClick={() => setVista("inbox")}>
               Inbox
@@ -2524,7 +2524,7 @@ export function ConversacionesClient({
       ) : null}
 
       {(mode === "historial" || vista === "inbox") ? (
-        <div className="flex flex-wrap items-end gap-3 shrink-0 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <div className={`flex flex-wrap items-end gap-3 shrink-0 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm ${selectedId ? "max-lg:hidden" : ""}`}>
           <label className="flex flex-col gap-1.5 min-w-[12rem]">
             <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
               Canal
