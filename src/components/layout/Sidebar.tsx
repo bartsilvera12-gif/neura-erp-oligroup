@@ -197,6 +197,13 @@ const MENU_STRUCTURE: MenuItem[] = [
     icon: TicketPlus,
   },
   {
+    key: "facturacion",
+    slug: "facturacion",
+    label: "Facturación",
+    href: "/facturacion",
+    icon: Receipt,
+  },
+  {
     key: "etiquetas",
     slug: "etiquetas",
     label: "Etiquetas",
