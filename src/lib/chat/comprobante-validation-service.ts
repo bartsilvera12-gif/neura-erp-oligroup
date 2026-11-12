@@ -87,6 +87,17 @@ const MIN_CHARS_FOR_OCR_FINGERPRINT_CHECK = 120;
 /** Motivo persistido cuando solo coincide huella OCR vs otro historial (sin referencia robusta). */
 export const MOTIVO_REVISION_HUELLA_OCR_DEBIL = "ocr_huella_similar_revision";
 
+/** True si el comprobante muestra un estado de transferencia aún no acreditada (procesando, pendiente, en curso). */
+function comprobanteIndicaTransferenciaNoAcreditada(text: string): boolean {
+  const t = text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
+  return /procesando\s+(la\s+)?transferencia|transferencia\s+(pendiente|en\s+proceso|en\s+curso|programada)|estado\s*:?\s*(pendiente|en\s+proceso|procesando)/.test(
+    t
+  );
+}
+
 export type ExtractedReceiptFields = {
   monto: string;
   referencia: string;
@@ -689,6 +700,10 @@ export async function runComprobanteValidationPipeline(ctx: PipelineCtx): Promis
   } else if (ocrFingerprintWeakDup) {
     estado = "revision_manual";
     motivo = MOTIVO_REVISION_HUELLA_OCR_DEBIL;
+  } else if (comprobanteIndicaTransferenciaNoAcreditada(fullText)) {
+    // El comprobante dice "Procesando transferencia" / "Pendiente": el dinero todavía no se acreditó.
+    estado = "revision_manual";
+    motivo = "transferencia_no_acreditada_en_comprobante";
   } else if (missingWorst === "bloquear") {
     estado = "ocr_error";
     motivo = `campo_obligatorio:${missingParts.join(",")}`;

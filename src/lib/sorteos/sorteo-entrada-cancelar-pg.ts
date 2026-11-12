@@ -29,6 +29,8 @@ export async function cancelSorteoEntradaViaDirectPostgres(input: {
   schema: string;
   empresaId: string;
   entradaId: string;
+  motivo?: string;
+  anuladoPor?: string;
 }): Promise<CancelSorteoEntradaResult> {
   const pool = getChatPostgresPool();
   if (!pool) {
@@ -38,7 +40,8 @@ export async function cancelSorteoEntradaViaDirectPostgres(input: {
   const tEnt = quoteSchemaTable(input.schema, "sorteo_entradas");
   const tSor = quoteSchemaTable(input.schema, "sorteos");
   const tCup = quoteSchemaTable(input.schema, "sorteo_cupones");
-  const tTd = quoteSchemaTable(input.schema, "sorteo_ticket_deliveries");
+  const tAnu = quoteSchemaTable(input.schema, "sorteo_cupones_anulados");
+  const tTd =quoteSchemaTable(input.schema, "sorteo_ticket_deliveries");
   const tVal = quoteSchemaTable(input.schema, "chat_comprobante_validaciones");
 
   const client = await pool.connect();
@@ -78,6 +81,44 @@ export async function cancelSorteoEntradaViaDirectPostgres(input: {
       Number.isFinite(Number(ent.cantidad_boletos)) && Number(ent.cantidad_boletos) > 0
         ? Number(ent.cantidad_boletos)
         : cupCount;
+
+    // Guardar las boletas anuladas (comprador + motivo) y bloquear sus números para siempre.
+    const dr = await client.query<{
+      nombre_participante: string | null;
+      whatsapp_numero: string | null;
+      documento: string | null;
+      monto_total: string | number | null;
+      estado_pago: string | null;
+    }>(
+      `SELECT nombre_participante, whatsapp_numero, documento, monto_total, estado_pago
+         FROM ${tEnt} WHERE id = $1::uuid AND empresa_id = $2::uuid`,
+      [input.entradaId, input.empresaId]
+    );
+    const d = dr.rows[0];
+    await client.query(
+      `INSERT INTO ${tAnu}
+         (empresa_id, sorteo_id, numero_cupon, coupon_number_value, entrada_id_original, numero_orden,
+          nombre_participante, whatsapp_numero, documento, cantidad_boletos, monto_total,
+          estado_pago_al_anular, motivo, anulado_por)
+       SELECT c.empresa_id, c.sorteo_id, c.numero_cupon, c.coupon_number_value, c.entrada_id, $3::int,
+              $4, $5, $6, $7::int, $8::numeric, $9, $10, $11
+         FROM ${tCup} c
+        WHERE c.entrada_id = $1::uuid AND c.empresa_id = $2::uuid
+       ON CONFLICT (sorteo_id, numero_cupon) DO NOTHING`,
+      [
+        input.entradaId,
+        input.empresaId,
+        Number.isFinite(Number(ent.numero_orden)) ? Number(ent.numero_orden) : null,
+        d?.nombre_participante ?? null,
+        d?.whatsapp_numero ?? null,
+        d?.documento ?? null,
+        qty,
+        d?.monto_total ?? null,
+        d?.estado_pago ?? null,
+        (input.motivo ?? "").trim() || "Cancelada por administrador",
+        input.anuladoPor ?? null,
+      ]
+    );
 
     // Borrados explícitos (no dependemos de ON DELETE CASCADE).
     await client.query(`DELETE FROM ${tTd} WHERE entrada_id = $1::uuid AND empresa_id = $2::uuid`, [

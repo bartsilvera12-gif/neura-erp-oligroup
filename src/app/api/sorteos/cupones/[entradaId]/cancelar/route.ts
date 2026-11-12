@@ -55,7 +55,21 @@ export async function POST(
       );
     }
 
-    const r = await cancelSorteoEntradaViaDirectPostgres({ schema, empresaId, entradaId });
+    let motivo = "";
+    try {
+      const body = (await request.json()) as { motivo?: unknown };
+      if (typeof body?.motivo === "string") motivo = body.motivo.slice(0, 500);
+    } catch {
+      /* sin cuerpo: se usa el motivo por defecto */
+    }
+
+    const r = await cancelSorteoEntradaViaDirectPostgres({
+      schema,
+      empresaId,
+      entradaId,
+      motivo,
+      anuladoPor: rol,
+    });
     if (!r.ok) {
       return NextResponse.json(errorResponse(r.message), { status: 400 });
     }

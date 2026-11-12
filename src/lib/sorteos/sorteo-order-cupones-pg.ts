@@ -129,6 +129,20 @@ export async function insertSorteoCuponesAndUpdateSorteoCounters(input: {
       }
     }
 
+    // Números de boletas anuladas: quedan bloqueados, no se vuelven a asignar.
+    const anuRes = await input.client.query<{ coupon_number_value: number | null; numero_cupon: string }>(
+      `SELECT coupon_number_value, numero_cupon FROM ${qsch}.sorteo_cupones_anulados WHERE sorteo_id = $1`,
+      [input.sorteoId]
+    );
+    for (const row of anuRes.rows) {
+      if (row.coupon_number_value != null && Number.isFinite(Number(row.coupon_number_value))) {
+        used.add(Math.trunc(Number(row.coupon_number_value)));
+      } else {
+        const p = parseNumeroCuponToInt(row.numero_cupon);
+        if (p != null) used.add(p);
+      }
+    }
+
     let valuesToAssign: number[] = [];
 
     if (mode === "correlative") {
