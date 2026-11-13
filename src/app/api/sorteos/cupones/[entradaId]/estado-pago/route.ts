@@ -12,6 +12,13 @@ import { successResponse, errorResponse } from "@/lib/api/response";
 import { API_ERRORS } from "@/lib/api/errors";
 import { invalidateSorteosListCachesForEmpresa } from "@/lib/sorteos/server-queries";
 import type { SorteoEntradaEstadoPago } from "@/lib/sorteos/types";
+import { getChatServiceClientForEmpresa } from "@/app/api/chat/_chat-service-client";
+import { createServiceRoleClientForEmpresa } from "@/lib/supabase/empresa-data-schema";
+import {
+  buildOrderResultFromEntradaId,
+  flowDataStubFromEntrada,
+} from "@/lib/sorteos/sorteo-ticket-admin";
+import { maybeGenerateAndSendSorteoTicketDelivery } from "@/lib/sorteos/sorteo-ticket-delivery";
 
 const LOG = "[sorteos-cupones][payment-status-update]";
 
@@ -24,6 +31,40 @@ function sanitizeErr(msg: string): string {
 }
 
 type Body = { estado_pago?: unknown };
+
+/** Al aprobar el pago a mano se genera la boleta (queda lista en Tickets para «Reenviar WA»). No bloquea la respuesta. */
+async function generarBoletaTrasAprobar(empresaId: string, entradaId: string): Promise<void> {
+  try {
+    const sbFlow = await getChatServiceClientForEmpresa(empresaId);
+    const sb = await createServiceRoleClientForEmpresa(empresaId);
+    const orderResult = await buildOrderResultFromEntradaId(sb, entradaId, empresaId);
+    if (!orderResult) return;
+    const fd = await flowDataStubFromEntrada(sb, entradaId);
+    const { data: ent } = await sb
+      .from("sorteo_entradas")
+      .select("chat_conversation_id")
+      .eq("id", entradaId)
+      .maybeSingle();
+    const conversationId =
+      (ent as { chat_conversation_id?: string | null } | null)?.chat_conversation_id ?? null;
+    await maybeGenerateAndSendSorteoTicketDelivery({
+      supabase: sbFlow,
+      empresaId,
+      sorteoId: orderResult.sorteoId,
+      entradaId,
+      conversationId,
+      flowSessionId: null,
+      contactId: "",
+      channelId: "",
+      orderResult,
+      flowData: fd,
+      trigger: "confirmacion_final",
+      skipWhatsApp: true,
+    });
+  } catch (e: unknown) {
+    console.error(LOG, { stage: "boleta_error", entrada_id: entradaId, error: sanitizeErr(String(e)) });
+  }
+}
 
 /**
  * PATCH /api/sorteos/cupones/[entradaId]/estado-pago
@@ -203,6 +244,8 @@ export async function PATCH(
         estado_nuevo: next,
       });
 
+      if (next === "confirmado") void generarBoletaTrasAprobar(empresaId, entradaId);
+
       return NextResponse.json(
         successResponse({
           entrada_id: entradaId,
@@ -311,6 +354,8 @@ export async function PATCH(
       entrada_id: entradaId,
       estado_nuevo: next,
     });
+
+    if (next === "confirmado") void generarBoletaTrasAprobar(empresaId, entradaId);
 
     return NextResponse.json(
       successResponse({

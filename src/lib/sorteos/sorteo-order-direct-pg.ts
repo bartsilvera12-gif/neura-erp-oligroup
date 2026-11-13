@@ -269,6 +269,19 @@ export async function ensureSorteoOrderViaDirectPostgres(
     const numeroOrden = Number(s.ultimo_numero_orden) + 1;
     const ultCupon = Number(s.ultimo_numero_cupon);
 
+    // Pago aprobado automáticamente solo si el comprobante pasó la validación (datos del
+    // comprobante correctos o aprobado a mano). Sin validación asociada queda para revisión.
+    let estadoPagoInicial: "confirmado" | "pendiente_revision" = "pendiente_revision";
+    const valId = input.comprobanteValidacionId?.trim();
+    if (valId) {
+      const vr = await client.query<{ estado_validacion: string | null }>(
+        `SELECT estado_validacion FROM ${qsch}.chat_comprobante_validaciones WHERE id = $1::uuid LIMIT 1`,
+        [valId]
+      );
+      const ev = String(vr.rows[0]?.estado_validacion ?? "").trim();
+      if (ev === "valido" || ev === "aprobado_manual") estadoPagoInicial = "confirmado";
+    }
+
     const rowEnt: Record<string, unknown> = {
       empresa_id: input.empresaId,
       sorteo_id: input.sorteoId,
@@ -280,7 +293,7 @@ export async function ensureSorteoOrderViaDirectPostgres(
       cantidad_boletos: qty,
       monto_total: montoTotal,
       moneda: "PYG",
-      estado_pago: "pendiente_revision",
+      estado_pago: estadoPagoInicial,
       comprobante_url: input.comprobanteUrl.trim() || null,
       validado_por: input.validadoPor.trim() || "chat_flow",
       numero_orden: numeroOrden,
@@ -373,7 +386,7 @@ export async function ensureSorteoOrderViaDirectPostgres(
       montoTotal,
       promoNombre: input.promoNombre.trim(),
       precioFuente: precioFuenteIns,
-      estadoPago: "pendiente_revision",
+      estadoPago: estadoPagoInicial,
     };
   } catch (err: unknown) {
     await client.query("ROLLBACK").catch(() => {});
