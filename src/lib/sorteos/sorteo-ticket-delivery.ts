@@ -245,6 +245,20 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
     return { ok: true, skipped: true, reason: "text_only" };
   }
 
+  // La boleta (imagen) solo se entrega con el pago confirmado: un comprobante leído por OCR
+  // deja la orden en "pendiente_revision" hasta que una persona verifica que el dinero ingresó.
+  const { data: pagoRow } = await db
+    .from("sorteo_entradas")
+    .select("estado_pago")
+    .eq("id", entradaId)
+    .eq("empresa_id", empresaId)
+    .maybeSingle();
+  const estadoPagoEntrada = String((pagoRow as { estado_pago?: unknown } | null)?.estado_pago ?? "").trim();
+  if (estadoPagoEntrada !== "confirmado") {
+    console.info("[sorteo-ticket] skipped_pago_no_confirmado", { entradaId, estadoPago: estadoPagoEntrada });
+    return { ok: true, skipped: true, reason: "pago_no_confirmado" };
+  }
+
   const config = normalizeTicketImageConfig(sorteoRow.ticket_image_config);
   const sorteoNombre = sorteoRow.nombre || "Sorteo";
 
