@@ -422,6 +422,7 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
     const fechaHora = new Date().toLocaleString("es-PY", {
       dateStyle: "short",
       timeStyle: "short",
+      timeZone: "America/Asuncion",
     });
 
     const renderInput: SorteoTicketRenderInput = {
