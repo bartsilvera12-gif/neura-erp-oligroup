@@ -1347,7 +1347,13 @@ export async function ensureSorteoOrderFromChat(
   // los persisten en la fila `sorteo_entradas`. Se completan acá (post-creación) para que
   // reimpresiones de ticket y el cupón térmico puedan leerlos desde la entrada.
   const flowCiudad = (participant.ciudad || "").trim();
-  const flowTelefono = (flowData["telefono"] ?? flowData["celular"] ?? "").trim();
+  // El teléfono ya no se pide en el flujo: se toma del número de WhatsApp desde el que escribe
+  // el comprador (si el flujo lo hubiera capturado igual, ese valor tiene prioridad).
+  const flowTelefono = (
+    norm(flowData["telefono"]) ||
+    norm(flowData["celular"]) ||
+    norm(input.whatsappNumero)
+  ).trim();
   if (entradaId && (flowCiudad || flowTelefono)) {
     const patch: Record<string, unknown> = {};
     if (flowCiudad) patch.ciudad = flowCiudad;
