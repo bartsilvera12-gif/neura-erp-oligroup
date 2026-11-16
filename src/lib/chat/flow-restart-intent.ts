@@ -176,6 +176,42 @@ async function isNodeCaptureSensitive(
   return false;
 }
 
+/**
+ * Nodo terminal: el flujo ya terminó en este nodo (no tiene próximo paso ni opciones
+ * que lleven a otro nodo), p. ej. "confirmacion_de_compra". Un cliente parado ahí que
+ * vuelve a escribir no tiene flujo que "continuar", así que cualquier mensaje debe
+ * re-enganchar (reiniciar) para que el bot responda en vez de quedar mudo.
+ */
+async function isTerminalFlowNode(
+  supabase: SupabaseAdmin,
+  empresaId: string,
+  flowCode: string,
+  nodeCode: string | null | undefined
+): Promise<boolean> {
+  const nc = nodeCode?.trim();
+  const fc = flowCode.trim();
+  if (!fc || !nc) return false;
+  const { data: node, error } = await supabase
+    .from("chat_flow_nodes")
+    .select("id, next_node_code")
+    .eq("empresa_id", empresaId)
+    .eq("flow_code", fc)
+    .eq("node_code", nc)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (error || !node) return false;
+  const row = node as { id: string; next_node_code?: string | null };
+  if (String(row.next_node_code ?? "").trim()) return false;
+  const { data: opts } = await supabase
+    .from("chat_flow_options")
+    .select("next_node_code")
+    .eq("node_id", row.id);
+  const hasOptionTarget = (opts ?? []).some((o) =>
+    String((o as { next_node_code?: string | null }).next_node_code ?? "").trim()
+  );
+  return !hasOptionTarget;
+}
+
 export type MaybeRestartForPurchaseIntentArgs = {
   messageType: string;
   content: string;
@@ -242,7 +278,16 @@ export async function maybeRestartForPurchaseIntent(
   const strongMatch = matchRestartPhraseList(content, cfg.restart_strong_keywords);
   const softMatch = matchRestartPhraseList(content, cfg.restart_keywords);
   const matched = strongMatch ?? softMatch;
-  if (!matched) return noop("no_keyword_match");
+
+  // Si no matchea ningún keyword, igual re-enganchamos cuando el cliente está en un
+  // nodo TERMINAL (el flujo ya terminó, p. ej. "confirmacion_de_compra"): cualquier
+  // mensaje debe hacer que el bot responda y reinicie, en vez de quedar mudo. En nodos
+  // NO terminales (a mitad del flujo) se sigue exigiendo keyword.
+  let reengageTerminal = false;
+  if (!matched) {
+    reengageTerminal = await isTerminalFlowNode(supabase, empresaId, effectiveFlow, args.convNode);
+    if (!reengageTerminal) return noop("no_keyword_match");
+  }
 
   const isStrong = Boolean(strongMatch);
 
@@ -275,7 +320,7 @@ export async function maybeRestartForPurchaseIntent(
     return noop("abandoned_no_restart_soft");
   }
 
-  if (!isStrong && activeRow && (await isNodeCaptureSensitive(supabase, empresaId, effectiveFlow, args.convNode))) {
+  if (!isStrong && !reengageTerminal && activeRow && (await isNodeCaptureSensitive(supabase, empresaId, effectiveFlow, args.convNode))) {
     console.info(LOG, "skip_sensitive_step_soft", {
       conversationId,
       flow_code: effectiveFlow,
@@ -286,10 +331,10 @@ export async function maybeRestartForPurchaseIntent(
 
   const rr = await restartWhatsappConversationToFlowStart(supabase, empresaId, conversationId, {
     preferFlowCode: effectiveFlow,
-    trigger: `purchase_intent:${matched}`,
+    trigger: matched ? `purchase_intent:${matched}` : "reengage_terminal_node",
     targetNodeCode: cfg.restart_node_code,
     preserveReferralFromPreviousSession: true,
-    intentAudit: { matched_keyword: matched },
+    intentAudit: { matched_keyword: matched ?? "(reengage_terminal_node)" },
   });
 
   if (!rr.restarted) {
