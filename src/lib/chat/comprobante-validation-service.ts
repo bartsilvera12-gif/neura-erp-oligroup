@@ -718,11 +718,10 @@ export async function runComprobanteValidationPipeline(ctx: PipelineCtx): Promis
     // Una imagen sin ningún dato bancario legible no se acepta como pago confirmado.
     estado = "revision_manual";
     motivo = "sin_datos_bancarios_en_comprobante";
-  } else if (settings.aprobacion_manual_siempre) {
-    // Transferencias: el administrador verifica contra el banco antes de habilitar boletas.
-    estado = "revision_manual";
-    motivo = "aprobacion_manual_requerida";
   }
+  // Si los datos del comprobante coinciden queda "valido": la orden se crea "pendiente_revision"
+  // y la boleta se envía como PROVISORIA (sin habilitar para el sorteo) hasta que el
+  // administrador confirme la transferencia. Ya no se frena el envío con "aprobacion_manual_siempre".
 
   const validationId = await insertValidationRow(supabase, {
     empresa_id: ctx.empresaId,
