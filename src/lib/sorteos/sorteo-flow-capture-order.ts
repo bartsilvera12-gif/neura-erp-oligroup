@@ -118,7 +118,11 @@ export function buildFlowNodeBfsOrder(nodes: FlowNodeRowLite[], opts: FlowOptRow
   return order;
 }
 
+/** Saludo de cliente registrado: sus botones confirman datos, no eligen cantidad. */
+const REGISTERED_CUSTOMER_GREETING_NODE_CODE = "cliente_registrado_saludo";
+
 function isCantidadCaptureNode(node: FlowNodeRowLite): boolean {
+  if (norm(node.node_code) === REGISTERED_CUSTOMER_GREETING_NODE_CODE) return false;
   const nt = norm(node.node_type).toLowerCase();
   return nt === "buttons" || nt === "list";
 }
