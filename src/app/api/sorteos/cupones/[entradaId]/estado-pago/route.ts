@@ -18,7 +18,10 @@ import {
   buildOrderResultFromEntradaId,
   flowDataStubFromEntrada,
 } from "@/lib/sorteos/sorteo-ticket-admin";
-import { maybeGenerateAndSendSorteoTicketDelivery } from "@/lib/sorteos/sorteo-ticket-delivery";
+import {
+  maybeGenerateAndSendSorteoTicketDelivery,
+  resendSorteoTicketByDeliveryId,
+} from "@/lib/sorteos/sorteo-ticket-delivery";
 
 const LOG = "[sorteos-cupones][payment-status-update]";
 
@@ -47,7 +50,7 @@ async function generarBoletaTrasAprobar(empresaId: string, entradaId: string): P
       .maybeSingle();
     const conversationId =
       (ent as { chat_conversation_id?: string | null } | null)?.chat_conversation_id ?? null;
-    await maybeGenerateAndSendSorteoTicketDelivery({
+    const gen = await maybeGenerateAndSendSorteoTicketDelivery({
       supabase: sbFlow,
       empresaId,
       sorteoId: orderResult.sorteoId,
@@ -61,6 +64,18 @@ async function generarBoletaTrasAprobar(empresaId: string, entradaId: string): P
       trigger: "confirmacion_final",
       skipWhatsApp: true,
     });
+    // Tras aprobar a mano la boleta también se envía al cliente por WhatsApp
+    // (antes quedaba solo "generated" y el cliente recibía solo el texto).
+    if (gen.ok && !gen.skipped && gen.deliveryId && conversationId) {
+      const sent = await resendSorteoTicketByDeliveryId({
+        supabase: sbFlow,
+        empresaId,
+        deliveryId: gen.deliveryId,
+      });
+      if (!sent.ok) {
+        console.error(LOG, { stage: "boleta_envio_error", entrada_id: entradaId, error: sent.error });
+      }
+    }
   } catch (e: unknown) {
     console.error(LOG, { stage: "boleta_error", entrada_id: entradaId, error: sanitizeErr(String(e)) });
   }
