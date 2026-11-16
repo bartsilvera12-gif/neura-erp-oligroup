@@ -9,6 +9,8 @@ export const BOT_WAKE_KEYWORDS_MAX_LENGTH = 60;
 /** Set histórico usado por `matchesConversationRestartKeyword` antes de la config por canal. */
 export const DEFAULT_BOT_WAKE_KEYWORDS = new Set([
   "hola",
+  "ola",
+  "oi",
   "menu",
   "menú",
   "comenzar",
@@ -47,6 +49,9 @@ export function normalizeWakeKeywordText(text: string): string {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    // Signos de puntuación pegados a la palabra ("Olá!", "¡Hola!") no deben impedir el match.
+    .replace(/[!¡?¿.,;:]/g, " ")
+    .trim()
     .replace(/\s+/g, " ");
 }
 
