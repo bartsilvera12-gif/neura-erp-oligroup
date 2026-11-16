@@ -35,7 +35,6 @@ function Inner() {
         value={value}
         className="border border-slate-300 rounded px-2 py-1.5 text-sm min-w-[180px]"
         onChange={(e) => applyEstado(e.target.value)}
-        aria-label="Filtrar por estado de pago"
       >
         <option value="">Todos</option>
         <option value="pendiente_revision">Pendiente revisión</option>
