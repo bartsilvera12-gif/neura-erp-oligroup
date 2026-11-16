@@ -31,6 +31,8 @@ export type SorteoTicketRenderInput = {
   /** Plantilla completa (custom_template) */
   templateBytes?: Buffer | null;
   templateMime?: string | null;
+  /** Boleta enviada antes de confirmar el pago: se marca como provisoria. */
+  provisional?: boolean;
 };
 
 /** Canvas modo automático — comprobante vertical premium */
@@ -899,6 +901,40 @@ export async function buildOligroupCuponSvg(input: SorteoTicketRenderInput): Pro
  * Punto único: plantilla personalizada (imagen + texto) o automático (SVG premium).
  */
 export async function renderTicketPngUnified(input: SorteoTicketRenderInput): Promise<{ png: Buffer; hash: string }> {
+  const base = await renderTicketPngBase(input);
+  if (!input.provisional) return base;
+  try {
+    const sharpMod = (await import("sharp")).default;
+    const meta = await sharpMod(base.png).metadata();
+    const w = meta.width && meta.width > 0 ? meta.width : WA;
+    const h = meta.height && meta.height > 0 ? meta.height : HA;
+    const bandH = Math.max(60, Math.round(h * 0.07));
+    const fs = Math.max(22, Math.round(bandH * 0.45));
+    const label = svgTextAsPath({
+      text: "PROVISORIA - NO VALIDA PARA PARTICIPAR HASTA CONFIRMAR EL PAGO",
+      x: w / 2,
+      y: Math.round(bandH / 2 + fs * 0.35),
+      fontSize: Math.min(fs, Math.round(w / 40)),
+      weight: 800,
+      fill: "#ffffff",
+      textAnchor: "middle",
+    });
+    const overlaySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${bandH}" viewBox="0 0 ${w} ${bandH}"><rect width="${w}" height="${bandH}" fill="#dc2626"/>${label}</svg>`;
+    const overlay = await sharpMod(Buffer.from(overlaySvg, "utf8")).png().toBuffer();
+    const png = await sharpMod(base.png)
+      .composite([{ input: overlay, left: 0, top: 0, blend: "over" }])
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+    return { png, hash: createHash("sha256").update(png).digest("hex") };
+  } catch (e) {
+    console.warn("[sorteo-ticket-render] provisional_overlay_failed", {
+      message: e instanceof Error ? e.message : String(e),
+    });
+    return base;
+  }
+}
+
+async function renderTicketPngBase(input: SorteoTicketRenderInput): Promise<{ png: Buffer; hash: string }> {
   if (input.config.design_mode === "cupon_oligroup") {
     try {
       const svg = await buildOligroupCuponSvg(input);

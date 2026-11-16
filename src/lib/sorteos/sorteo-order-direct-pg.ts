@@ -269,8 +269,9 @@ export async function ensureSorteoOrderViaDirectPostgres(
     const numeroOrden = Number(s.ultimo_numero_orden) + 1;
     const ultCupon = Number(s.ultimo_numero_cupon);
 
-    // Pago aprobado automáticamente solo si el comprobante pasó la validación (datos del
-    // comprobante correctos o aprobado a mano). Sin validación asociada queda para revisión.
+    // Transferencia: aunque los datos del comprobante coincidan ("valido"), la compra queda en
+    // "pendiente_revision" (la boleta se envía como provisoria) hasta que el administrador confirme
+    // el ingreso del dinero. Solo "aprobado_manual" (asesor) confirma directamente.
     let estadoPagoInicial: "confirmado" | "pendiente_revision" = "pendiente_revision";
     const valId = input.comprobanteValidacionId?.trim();
     if (valId) {
@@ -279,7 +280,7 @@ export async function ensureSorteoOrderViaDirectPostgres(
         [valId]
       );
       const ev = String(vr.rows[0]?.estado_validacion ?? "").trim();
-      if (ev === "valido" || ev === "aprobado_manual") estadoPagoInicial = "confirmado";
+      if (ev === "aprobado_manual") estadoPagoInicial = "confirmado";
     }
 
     const rowEnt: Record<string, unknown> = {

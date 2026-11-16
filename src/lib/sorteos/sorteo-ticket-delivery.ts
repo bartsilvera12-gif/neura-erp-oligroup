@@ -249,12 +249,30 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
   // deja la orden en "pendiente_revision" hasta que una persona verifica que el dinero ingresó.
   const { data: pagoRow } = await db
     .from("sorteo_entradas")
-    .select("estado_pago")
+    .select("estado_pago, comprobante_validacion_id")
     .eq("id", entradaId)
     .eq("empresa_id", empresaId)
     .maybeSingle();
   const estadoPagoEntrada = String((pagoRow as { estado_pago?: unknown } | null)?.estado_pago ?? "").trim();
-  if (estadoPagoEntrada !== "confirmado") {
+  // Excepción: transferencia cuyos datos del comprobante coincidieron (validación "valido") pero
+  // el administrador aún no confirmó el ingreso: se envía la boleta como PROVISORIA.
+  let provisional = false;
+  if (estadoPagoEntrada === "pendiente_revision") {
+    const valId = String(
+      (pagoRow as { comprobante_validacion_id?: unknown } | null)?.comprobante_validacion_id ?? ""
+    ).trim();
+    if (valId) {
+      const { data: valRow } = await db
+        .from("chat_comprobante_validaciones")
+        .select("estado_validacion")
+        .eq("id", valId)
+        .eq("empresa_id", empresaId)
+        .maybeSingle();
+      provisional =
+        String((valRow as { estado_validacion?: unknown } | null)?.estado_validacion ?? "").trim() === "valido";
+    }
+  }
+  if (estadoPagoEntrada !== "confirmado" && !provisional) {
     console.info("[sorteo-ticket] skipped_pago_no_confirmado", { entradaId, estadoPago: estadoPagoEntrada });
     return { ok: true, skipped: true, reason: "pago_no_confirmado" };
   }
@@ -439,6 +457,7 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
         : {}),
       fechaHora,
       config,
+      provisional,
       logoBytes: logoDl?.bytes ?? null,
       logoMime: logoDl?.mime ?? null,
       backgroundBytes: bgDl?.bytes ?? null,
@@ -557,10 +576,16 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
       throw new Error(safeErr(e));
     }
 
-    const caption =
+    const captionBase =
       (config.caption ?? "").trim() ||
       (config.title ?? "").trim() ||
       `Orden Nº ${orderResult.numeroOrden} — ${sorteoNombre}`.slice(0, 1024);
+    const caption = provisional
+      ? `${captionBase}\n\n⚠️ Boleta PROVISORIA: no es válida para participar hasta que confirmemos el ingreso de tu transferencia.`.slice(
+          0,
+          1024
+        )
+      : captionBase;
 
     console.info("[sorteo-ticket] whatsapp_send_start", {
       deliveryId: rowId,
