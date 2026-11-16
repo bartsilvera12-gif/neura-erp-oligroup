@@ -71,6 +71,11 @@ export interface ComprobanteValidationSettings {
   bloquear_por_hash_duplicado: boolean;
   bloquear_por_ocr_duplicado: boolean;
   revision_manual_si_sospecha_ocr: boolean;
+  /**
+   * Si true, ningún comprobante queda "válido" automáticamente: siempre pasa a revisión manual
+   * (el administrador compara con el banco y aprueba). Por defecto false.
+   */
+  aprobacion_manual_siempre: boolean;
   /** Si true, en revisión manual se marca conversación en modo humano (deja de responder el bot). */
   revision_manual_activar_takeover: boolean;
   /** Texto OCR más corto que esto → sospecha (si el toggle de sospecha está activo). */
@@ -175,6 +180,7 @@ export function defaultComprobanteValidationSettings(): ComprobanteValidationSet
     bloquear_por_hash_duplicado: true,
     bloquear_por_ocr_duplicado: true,
     revision_manual_si_sospecha_ocr: true,
+    aprobacion_manual_siempre: false,
     revision_manual_activar_takeover: false,
     ocr_min_chars_sospecha: 24,
     ocr_fallo_comportamiento: "revision_manual",
@@ -335,6 +341,7 @@ export function parseComprobanteValidationConfig(config: unknown): ComprobanteVa
       r.revision_manual_si_sospecha_ocr,
       base.revision_manual_si_sospecha_ocr
     ),
+    aprobacion_manual_siempre: r.aprobacion_manual_siempre === true,
     revision_manual_activar_takeover: r.revision_manual_activar_takeover === true,
     ocr_min_chars_sospecha:
       typeof r.ocr_min_chars_sospecha === "number" && r.ocr_min_chars_sospecha >= 0
@@ -362,6 +369,7 @@ export function comprobanteValidationSettingsForForm(
     bloquear_por_hash_duplicado: settings.bloquear_por_hash_duplicado,
     bloquear_por_ocr_duplicado: settings.bloquear_por_ocr_duplicado,
     revision_manual_si_sospecha_ocr: settings.revision_manual_si_sospecha_ocr,
+    aprobacion_manual_siempre: settings.aprobacion_manual_siempre,
     revision_manual_activar_takeover: settings.revision_manual_activar_takeover,
     ocr_min_chars_sospecha: settings.ocr_min_chars_sospecha,
     ocr_fallo_comportamiento: settings.ocr_fallo_comportamiento,

@@ -711,6 +711,17 @@ export async function runComprobanteValidationPipeline(ctx: PipelineCtx): Promis
   } else if (sospecha) {
     estado = "revision_manual";
     motivo = "ocr_texto_corto_sospecha";
+  } else if (
+    settings.validar_datos_bancarios_ocr &&
+    bankFlowResult.audit.bank_val_status === "omitido_sin_ocr_bancario"
+  ) {
+    // Una imagen sin ningún dato bancario legible no se acepta como pago confirmado.
+    estado = "revision_manual";
+    motivo = "sin_datos_bancarios_en_comprobante";
+  } else if (settings.aprobacion_manual_siempre) {
+    // Transferencias: el administrador verifica contra el banco antes de habilitar boletas.
+    estado = "revision_manual";
+    motivo = "aprobacion_manual_requerida";
   }
 
   const validationId = await insertValidationRow(supabase, {
