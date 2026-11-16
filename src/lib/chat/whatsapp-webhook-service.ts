@@ -259,6 +259,9 @@ export function extractInboundComprobanteMedia(msg: MetaInboundMessage): {
   return null;
 }
 
+/** wa_message_id de imágenes/comprobantes que se están procesando ahora (evita doble respuesta por reintento de Meta). */
+const imageReplyInFlight = new Set<string>();
+
 /** Evita reprocesar la misma imagen si ya hay image_received con este wa_message_id (reintentos webhook). */
 async function flowImageInboundAlreadyRecorded(
   supabase: SupabaseAdmin,
@@ -1874,8 +1877,14 @@ export async function processInboundWebhookValue(
             skippedReason,
           });
         } else {
-          const alreadyRecorded = await flowImageInboundAlreadyRecorded(supabase, conversationId, waMid);
+          // Traba en memoria: el evento image_received se guarda recién después del OCR, así que un
+          // reintento de Meta que llega mientras se procesa pasaba el chequeo y mandaba el mensaje 2 veces.
+          const inFlightImage = imageReplyInFlight.has(waMid);
+          if (!inFlightImage) imageReplyInFlight.add(waMid);
+          const alreadyRecorded =
+            inFlightImage || (await flowImageInboundAlreadyRecorded(supabase, conversationId, waMid));
           if (alreadyRecorded) {
+            if (!inFlightImage) imageReplyInFlight.delete(waMid);
             console.info("[flow-image-input]", "[skipped-reason]", {
               conversationId,
               waMessageId: waMid,
@@ -1931,6 +1940,8 @@ export async function processInboundWebhookValue(
                 waMessageId: waMid,
                 exception: em,
               });
+            } finally {
+              imageReplyInFlight.delete(waMid);
             }
           }
         }
