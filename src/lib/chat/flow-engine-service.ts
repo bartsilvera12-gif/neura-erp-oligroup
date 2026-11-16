@@ -402,6 +402,9 @@ function augmentSorteoPricingFromInteractiveOption(
   return out;
 }
 
+/** Nodo (botones) que saluda a quien ya compró con ese número y pide confirmar sus datos. */
+const REGISTERED_CUSTOMER_NODE_CODE = "cliente_registrado_saludo";
+
 export function createFlowEngine(ctx: FlowEngineContext) {
   const supabase = ctx.supabase;
 
@@ -1267,6 +1270,55 @@ export function createFlowEngine(ctx: FlowEngineContext) {
     return { merged, filledKeys };
   }
 
+  /**
+   * Cliente que ya compró antes con este número de WhatsApp (última orden no anulada).
+   * Se usa solo en el nodo de saludo "cliente registrado"; no cambia el resto del flujo.
+   */
+  async function loadRegisteredSorteoCustomer(
+    empresaId: string,
+    toDigits: string
+  ): Promise<{ nombre: string; cedula: string; ciudad: string; telefono: string } | null> {
+    const digits = String(toDigits ?? "").replace(/\D/g, "");
+    if (!digits) return null;
+    const { data, error } = await supabase
+      .from("sorteo_entradas")
+      .select("nombre_participante, documento, ciudad, telefono_contacto, estado_pago, created_at")
+      .eq("empresa_id", empresaId)
+      .eq("whatsapp_numero", digits)
+      .order("created_at", { ascending: false })
+      .limit(10);
+    if (error) {
+      console.warn("[flow-engine] registered_customer_lookup_failed", error.message);
+      return null;
+    }
+    for (const r of (data ?? []) as Array<Record<string, unknown>>) {
+      const estado = String(r.estado_pago ?? "").toLowerCase();
+      if (estado.includes("anul") || estado.includes("cancel") || estado.includes("rechaz")) continue;
+      const nombre = String(r.nombre_participante ?? "").trim();
+      const cedula = String(r.documento ?? "").trim();
+      if (!nombre || !cedula) continue;
+      const telRaw = String(r.telefono_contacto ?? digits).replace(/\D/g, "") || digits;
+      const telefono = telRaw.startsWith("595") ? `0${telRaw.slice(3)}` : telRaw;
+      return { nombre, cedula, ciudad: String(r.ciudad ?? "").trim(), telefono };
+    }
+    return null;
+  }
+
+  function registeredCustomerFlowVars(c: {
+    nombre: string;
+    cedula: string;
+    ciudad: string;
+    telefono: string;
+  }): Record<string, string> {
+    return {
+      cliente_primer_nombre: c.nombre.split(/\s+/)[0] ?? c.nombre,
+      cliente_nombre: c.nombre,
+      cliente_cedula: c.cedula,
+      cliente_ciudad: c.ciudad,
+      cliente_telefono: c.telefono,
+    };
+  }
+
   function interpolateTemplate(
     input: string,
     vars: Record<string, string | number | boolean | null | undefined>
@@ -1603,6 +1655,25 @@ export function createFlowEngine(ctx: FlowEngineContext) {
     const node = await getNode(state.empresa_id, state.flow_code, state.flow_current_node);
     if (!node) return { ok: false, error: "Nodo actual no encontrado" };
 
+    let registeredCustomerVars: Record<string, string> = {};
+    if (node.node_code === REGISTERED_CUSTOMER_NODE_CODE) {
+      const regCustomer = await loadRegisteredSorteoCustomer(state.empresa_id, ctxSend.toDigits);
+      if (!regCustomer) {
+        // Persona nueva: se omite el saludo y sigue el flujo normal.
+        const nextCode = node.next_node_code?.trim();
+        if (!nextCode) return { ok: false, error: "Nodo de cliente registrado sin siguiente paso" };
+        const advSkip = await advanceConversationToNode({
+          conversationId: state.id,
+          empresaId: state.empresa_id,
+          flowCode: state.flow_code,
+          nextNodeCode: nextCode,
+        });
+        if (!advSkip.ok) return { ok: false, error: advSkip.error ?? "advance_failed" };
+        return sendCurrentFlowNode({ ...params, __autoHop: currentHop + 1 });
+      }
+      registeredCustomerVars = registeredCustomerFlowVars(regCustomer);
+    }
+
     const sidGate = state.active_flow_session_id.trim();
     const hydFdPointer = await buildHydratedFlowDataForCompletenessGate({
       empresaId: state.empresa_id,
@@ -1667,7 +1738,7 @@ export function createFlowEngine(ctx: FlowEngineContext) {
       flowSessionId: state.active_flow_session_id,
       traceReadContext: "send_current_node_confirmacion_resumen",
     });
-    const flowVars = { ...flowVarsBase, ...(params.mergeFlowVars ?? {}) };
+    const flowVars = { ...flowVarsBase, ...(params.mergeFlowVars ?? {}), ...registeredCustomerVars };
     const sumV = summarizeFlowDataForTrace(flowVars);
     flowTrace("send_node_interpolate", {
       conversation_id: state.id,
@@ -2444,6 +2515,39 @@ export function createFlowEngine(ctx: FlowEngineContext) {
         event: "interactive_option_payload",
         field_names: payloadEntries.map(([k]) => k.trim()).filter(Boolean),
       });
+    }
+
+    // "Sí, confirmar" en el saludo de cliente registrado: se reutilizan sus datos en esta sesión
+    // (el flujo entonces solo pide cantidad y comprobante). "No" deja que se carguen de nuevo.
+    if (
+      currentNode.node_code === REGISTERED_CUSTOMER_NODE_CODE &&
+      String((optionPayload as Record<string, unknown>).reutilizar_datos ?? "").toLowerCase() === "si" &&
+      state.flow_code
+    ) {
+      const sendCtxReg = await getConversationSendContext(state.id);
+      const regCustomer = await loadRegisteredSorteoCustomer(state.empresa_id, sendCtxReg.toDigits);
+      if (regCustomer) {
+        const regRows = [
+          ["nombre_completo", regCustomer.nombre],
+          ["cedula", regCustomer.cedula],
+          ["ciudad", regCustomer.ciudad],
+        ]
+          .filter(([, v]) => String(v).trim())
+          .map(([k, v]) => ({
+            empresa_id: state.empresa_id,
+            conversation_id: state.id,
+            flow_code: state.flow_code as string,
+            flow_session_id: flowSidInteractive,
+            field_name: k,
+            field_value: v,
+          }));
+        const { error: regErr } = await supabase
+          .from("chat_flow_data")
+          .upsert(regRows, { onConflict: "flow_session_id,field_name" });
+        if (regErr) {
+          return { ok: false, status: "save_registered_customer_failed", error: regErr.message };
+        }
+      }
     }
 
     let sorteoOrderMerge: Record<string, string> | undefined;
