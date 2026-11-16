@@ -1775,10 +1775,15 @@ export async function processInboundWebhookValue(
 
         if (!interactiveInboundMetaId) {
           if (message_type === "text") {
-            const skipAfterRestartKeyword = restartKeywordMatch && restartedThisMessage;
+            // Si el mensaje disparó CUALQUIER reinicio en este webhook (keyword hola/menú,
+            // intención de compra "quiero comprar", o wake), fue usado como comando de
+            // reinicio: el nodo de inicio ya se presentó, así que el mismo mensaje NO debe
+            // re-interpretarse como input del nodo actual. Antes solo cubría el reinicio por
+            // keyword, por eso "quiero comprar" reenviaba el menú de combos dos veces.
+            const skipAfterRestart = restartedThisMessage;
             const skipBecauseNonCapturePresent =
               presentResult && presentResult.presentedNow && !presentResult.acceptsInboundTextAsCapture;
-            if (skipAfterRestartKeyword) {
+            if (skipAfterRestart) {
               console.info(logW, "skip_text_flow_handler", {
                 conversationId,
                 reason: "mensaje_usado_como_reinicio_flujo_no_es_captura",
