@@ -10,8 +10,9 @@ import { resendSorteoTicketByDeliveryId } from "@/lib/sorteos/sorteo-ticket-deli
  * de Tickets. NO afecta el envío automático original del flujo (ese sigue
  * derivando el caption desde `ticket_image_config` del sorteo).
  */
-const TRIPLE7_RESEND_DEFAULT_CAPTION =
-  "Te reenviamos tu comprobante de participación de TRIPLE 7. Guardalo como respaldo. ¡Éxitos!";
+// Caption neutral (sin marca hardcodeada): sirve para cualquier cliente/empresa.
+const RESEND_DEFAULT_CAPTION =
+  "Te reenviamos tu comprobante de participación. Guardalo como respaldo. ¡Éxitos!";
 
 const WA_WINDOW_MS = 24 * 60 * 60 * 1000;
 
@@ -112,7 +113,7 @@ export async function POST(
       supabase: sb,
       empresaId,
       deliveryId: id,
-      captionOverride: TRIPLE7_RESEND_DEFAULT_CAPTION,
+      captionOverride: RESEND_DEFAULT_CAPTION,
     });
     if (!r.ok) {
       const st =
