@@ -47,16 +47,25 @@ export async function GET(request: NextRequest) {
     const tTd = quoteSchemaTable(dataSchema, "sorteo_ticket_deliveries");
 
     const qRaw = (request.nextUrl.searchParams.get("q") ?? "").trim();
-    const params: unknown[] = [empresaId, usuarioId];
+    const params: unknown[] = [empresaId];
+    // Sin búsqueda: solo "mis ventas" (las que cargó este usuario). Con búsqueda por texto se
+    // busca en TODA la empresa, para poder reimprimir también las boletas generadas por el bot
+    // (transferencias: validado_por_user_id queda NULL), no solo las propias del operador.
+    let userFilter = "";
+    if (!qRaw) {
+      params.push(usuarioId);
+      userFilter = `AND e.validado_por_user_id = $${params.length}::uuid`;
+    }
     let whereQ = "";
     if (qRaw) {
       const term = `%${qRaw.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
       params.push(term);
+      const p = params.length;
       whereQ = `AND (
-        e.nombre_participante ILIKE $3 ESCAPE '\\'
-        OR COALESCE(e.documento::text, '') ILIKE $3 ESCAPE '\\'
-        OR COALESCE(e.whatsapp_numero, '') ILIKE $3 ESCAPE '\\'
-        OR CAST(e.numero_orden AS text) ILIKE $3 ESCAPE '\\'
+        e.nombre_participante ILIKE $${p} ESCAPE '\\'
+        OR COALESCE(e.documento::text, '') ILIKE $${p} ESCAPE '\\'
+        OR COALESCE(e.whatsapp_numero, '') ILIKE $${p} ESCAPE '\\'
+        OR CAST(e.numero_orden AS text) ILIKE $${p} ESCAPE '\\'
       )`;
     }
 
@@ -86,7 +95,7 @@ export async function GET(request: NextRequest) {
       FROM ${tEnt} e
       INNER JOIN ${tSor} so ON so.id = e.sorteo_id AND so.empresa_id = e.empresa_id
       WHERE e.empresa_id = $1::uuid
-        AND e.validado_por_user_id = $2::uuid
+        ${userFilter}
         ${whereQ}
       ORDER BY e.created_at DESC NULLS LAST
       LIMIT ${MAX}

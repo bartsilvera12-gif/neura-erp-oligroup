@@ -457,7 +457,10 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
         : {}),
       fechaHora,
       config,
-      provisional,
+      // El cliente SIEMPRE recibe la boleta normal. El estado "pendiente" de una
+      // transferencia queda solo interno (panel Sorteos/Boletas); no se estampa el
+      // banner "PROVISORIA" en la boleta que recibe el cliente.
+      provisional: false,
       logoBytes: logoDl?.bytes ?? null,
       logoMime: logoDl?.mime ?? null,
       backgroundBytes: bgDl?.bytes ?? null,
@@ -580,12 +583,9 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
       (config.caption ?? "").trim() ||
       (config.title ?? "").trim() ||
       `Orden Nº ${orderResult.numeroOrden} — ${sorteoNombre}`.slice(0, 1024);
-    const caption = provisional
-      ? `${captionBase}\n\n⚠️ Boleta PROVISORIA: no es válida para participar hasta que confirmemos el ingreso de tu transferencia.`.slice(
-          0,
-          1024
-        )
-      : captionBase;
+    // El cliente recibe siempre el caption normal; la advertencia "PROVISORIA" ya no
+    // se le muestra (el estado pendiente es interno del panel Sorteos/Boletas).
+    const caption = captionBase;
 
     console.info("[sorteo-ticket] whatsapp_send_start", {
       deliveryId: rowId,
