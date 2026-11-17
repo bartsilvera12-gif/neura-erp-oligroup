@@ -268,8 +268,14 @@ export async function maybeGenerateAndSendSorteoTicketDelivery(
         .eq("id", valId)
         .eq("empresa_id", empresaId)
         .maybeSingle();
-      provisional =
-        String((valRow as { estado_validacion?: unknown } | null)?.estado_validacion ?? "").trim() === "valido";
+      const estVal = String(
+        (valRow as { estado_validacion?: unknown } | null)?.estado_validacion ?? ""
+      ).trim();
+      // "valido" = los datos del comprobante coincidieron por OCR.
+      // "aprobado_manual" = un asesor aprobó el comprobante a mano. En ambos casos la boleta
+      // se debe generar y enviar (sale NORMAL, sin banner: ver `provisional: false` en el render).
+      // Antes solo contemplaba "valido", por eso las aprobaciones de asesor no mandaban la imagen.
+      provisional = estVal === "valido" || estVal === "aprobado_manual";
     }
   }
   if (estadoPagoEntrada !== "confirmado" && !provisional) {
