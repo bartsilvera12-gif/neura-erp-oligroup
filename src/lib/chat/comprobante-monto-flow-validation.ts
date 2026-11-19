@@ -11,6 +11,7 @@ export type MontoValidacionAuditStatus =
   | "omitido_config"
   | "omitido_sin_esperado"
   | "omitido_sin_ocr"
+  | "omitido_ocr_implausible"
   | "coincide"
   | "discrepancia";
 
@@ -167,6 +168,25 @@ export async function validateReceiptAmountAgainstFlow(
         monto_validacion_ocr_gs: ocrGs,
         monto_validacion_diferencia_gs: null,
         monto_validacion_status: "omitido_sin_esperado",
+      }),
+    };
+  }
+
+  // Solo confiamos en el monto leído por OCR si parece un pago REAL del sorteo:
+  // redondo (múltiplo de 1.000) y dentro de un rango sensato. Si no lo es, es casi
+  // seguro que el OCR agarró otra cosa (nro de cuenta, una referencia larga, un
+  // importe partido) y marcar "monto no coincide" sería un FALSO POSITIVO sobre una
+  // orden legítima. En ese caso se omite la validación de monto (no se traba).
+  const ocrPlausible = ocrGs >= 5000 && ocrGs <= 1_500_000 && ocrGs % 1000 === 0;
+  if (!ocrPlausible) {
+    return {
+      apply: false,
+      audit: mergePickAudit({
+        ...emptyAudit(),
+        monto_validacion_esperado_gs: esperadoGs,
+        monto_validacion_ocr_gs: ocrGs,
+        monto_validacion_diferencia_gs: null,
+        monto_validacion_status: "omitido_ocr_implausible",
       }),
     };
   }
