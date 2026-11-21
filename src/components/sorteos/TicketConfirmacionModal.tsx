@@ -70,7 +70,7 @@ export default function TicketConfirmacionModal({
 }: Props) {
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   /** Una imagen por boleta (multi-cupón). En ventas de 1 boleta, trae esa sola. */
-  const [ticketImages, setTicketImages] = useState<{ cupon: string | null; url: string }[]>([]);
+  const [ticketImages, setTicketImages] = useState<{ cupon: string | null; url: string; path?: string }[]>([]);
   const [loadingUrl, setLoadingUrl] = useState(false);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [envio, setEnvio] = useState<Envio>({ estado: "idle" });
@@ -209,7 +209,7 @@ export default function TicketConfirmacionModal({
         );
         const json = (await res.json()) as {
           success?: boolean;
-          data?: { url?: string; images?: { cupon: string | null; url: string }[] };
+          data?: { url?: string; images?: { cupon: string | null; url: string; path?: string }[] };
           error?: string;
         };
         if (cancelled) return;
@@ -250,10 +250,61 @@ export default function TicketConfirmacionModal({
     a.href = href;
     a.download = nombre;
     a.rel = "noopener";
+    a.style.display = "none";
     document.body.appendChild(a);
     a.click();
-    a.remove();
+    // Se quita después: si se saca en el mismo instante, algunos navegadores no arrancan la descarga.
+    window.setTimeout(() => a.remove(), 1000);
   }, []);
+
+  /** Baja una imagen como Blob. Primero por el servidor del ERP (mismo origen, sin CORS). */
+  const bajarImagen = useCallback(
+    async (img: { url: string; path?: string }): Promise<Blob> => {
+      if (deliveryId && img.path) {
+        try {
+          const r = await fetchWithSupabaseSession(
+            `/api/sorteos/tickets/${deliveryId}/image?stream=1&p=${encodeURIComponent(img.path)}`,
+            { cache: "no-store" }
+          );
+          if (r.ok) return await r.blob();
+        } catch {
+          /* cae a la URL firmada */
+        }
+      }
+      const resp = await fetch(img.url);
+      if (!resp.ok) throw new Error("fetch");
+      return await resp.blob();
+    },
+    [deliveryId]
+  );
+
+  /** Celular con varias boletas: archivos listos para `navigator.share({ files })`. */
+  const [archivosShare, setArchivosShare] = useState<File[]>([]);
+  useEffect(() => {
+    setArchivosShare([]);
+    if (!open || ticketImages.length < 2) return;
+    if (typeof navigator === "undefined" || typeof navigator.canShare !== "function" || typeof navigator.share !== "function") {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const files = await Promise.all(
+          ticketImages.map(async (img) => {
+            const blob = await bajarImagen(img);
+            return new File([blob], `boleta-${img.cupon ?? "orden"}.png`, { type: "image/png" });
+          })
+        );
+        if (cancelled) return;
+        if (navigator.canShare({ files })) setArchivosShare(files);
+      } catch {
+        /* sin share: queda el ZIP */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, ticketImages, bajarImagen]);
 
   /**
    * PNG(s). Es lo que consume el envío por WhatsApp: baja a la galería del teléfono, que es de
@@ -296,73 +347,42 @@ export default function TicketConfirmacionModal({
     /** Varias boletas: un solo ZIP con todas las imágenes (una única descarga, no la corta el navegador). */
     void (async () => {
       try {
-        const crcTable = new Uint32Array(256);
-        for (let n = 0; n < 256; n++) {
-          let c = n;
-          for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-          crcTable[n] = c >>> 0;
-        }
-        const crc32 = (d: Uint8Array) => {
-          let c = 0xffffffff;
-          for (let i = 0; i < d.length; i++) c = crcTable[(c ^ d[i]) & 0xff] ^ (c >>> 8);
-          return (c ^ 0xffffffff) >>> 0;
-        };
-        const enc = new TextEncoder();
-        const partes: BlobPart[] = [];
-        const central: BlobPart[] = [];
-        let offset = 0;
-        let centralSize = 0;
-        // Se bajan todas en paralelo para que el ZIP salga rápido.
-        const bajadas = await Promise.all(
-          lista.map(async (img) => {
-            const resp = await fetch(img.url);
-            if (!resp.ok) throw new Error("fetch");
-            return new Uint8Array(await resp.arrayBuffer());
-          })
-        );
-        for (let idx = 0; idx < lista.length; idx++) {
-          const img = lista[idx];
-          const datos = bajadas[idx];
-          const nombre = enc.encode(nombreDe(img));
-          const crc = crc32(datos);
-          const lh = new DataView(new ArrayBuffer(30));
-          lh.setUint32(0, 0x04034b50, true);
-          lh.setUint16(4, 20, true);
-          lh.setUint16(6, 0x0800, true);
-          lh.setUint32(14, crc, true);
-          lh.setUint32(18, datos.length, true);
-          lh.setUint32(22, datos.length, true);
-          lh.setUint16(26, nombre.length, true);
-          partes.push(lh.buffer, nombre, datos);
-          const ch = new DataView(new ArrayBuffer(46));
-          ch.setUint32(0, 0x02014b50, true);
-          ch.setUint16(4, 20, true);
-          ch.setUint16(6, 20, true);
-          ch.setUint16(8, 0x0800, true);
-          ch.setUint32(16, crc, true);
-          ch.setUint32(20, datos.length, true);
-          ch.setUint32(24, datos.length, true);
-          ch.setUint16(28, nombre.length, true);
-          ch.setUint32(42, offset, true);
-          central.push(ch.buffer, nombre);
-          centralSize += 46 + nombre.length;
-          offset += 30 + nombre.length + datos.length;
-        }
-        const fin = new DataView(new ArrayBuffer(22));
-        fin.setUint32(0, 0x06054b50, true);
-        fin.setUint16(8, lista.length, true);
-        fin.setUint16(10, lista.length, true);
-        fin.setUint32(12, centralSize, true);
-        fin.setUint32(16, offset, true);
-        const blob = new Blob([...partes, ...central, fin.buffer], { type: "application/zip" });
+        const [{ default: JSZip }, blobs] = await Promise.all([
+          import("jszip"),
+          Promise.all(lista.map((img) => bajarImagen(img))),
+        ]);
+        const zip = new JSZip();
+        lista.forEach((img, idx) => zip.file(nombreDe(img), blobs[idx]));
+        const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
         const href = URL.createObjectURL(blob);
         dispararDescarga(href, `boletas-orden-${numeroOrden ?? ""}.zip`);
         window.setTimeout(() => URL.revokeObjectURL(href), 60000);
       } catch {
-        porSeparado();
+        setEnvio({
+          estado: "error",
+          mensaje: "No se pudo armar el ZIP. Probá de nuevo en unos segundos.",
+        });
       }
     })();
-  }, [ticketImages, signedUrl, nombreArchivo, numeroOrden, dispararDescarga]);
+  }, [ticketImages, signedUrl, nombreArchivo, numeroOrden, dispararDescarga, bajarImagen]);
+
+  /**
+   * Celular: las imágenes ya bajadas (File) se comparten con la hoja nativa. Se precargan al
+   * abrir el modal para que `navigator.share` salga dentro del mismo toque del usuario.
+   */
+  const compartirArchivos = useCallback(async () => {
+    if (archivosShare.length === 0) return;
+    try {
+      await navigator.share({
+        files: archivosShare,
+        text: mensaje,
+      });
+      setEnvio({ estado: "ok", mensaje: `Se abrió la hoja de compartir con las ${archivosShare.length} boletas.` });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
+      setEnvio({ estado: "error", mensaje: "No se pudo abrir la hoja de compartir." });
+    }
+  }, [archivosShare, mensaje]);
 
   /**
    * PDF de verdad, para archivar o mandar a imprimir. Se arma en el navegador con pdf-lib,
@@ -517,7 +537,7 @@ export default function TicketConfirmacionModal({
       estado: "ok",
       mensaje:
         cantImgs > 1
-          ? `Se descargó un ZIP con las ${cantImgs} imágenes (una por boleta) y se abrió el chat. Descomprimilo y adjuntá las ${cantImgs} con 📎 → Galería.`
+          ? `Se descargó un ZIP con las ${cantImgs} imágenes (una por boleta) y se abrió el chat. Descomprimilo y adjuntá las ${cantImgs} desde tus archivos con 📎.`
           : cantImgs === 1
             ? "Ticket descargado y chat abierto. Adjuntalo con 📎 → Galería."
             : `Chat de ${telefonoCliente || "WhatsApp"} abierto con el mensaje y los números.`,
@@ -691,18 +711,33 @@ export default function TicketConfirmacionModal({
           ) : null}
           {ticketImages.length > 1 ? (
             <div className="mb-2 rounded-md border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-3 py-2 text-xs text-[#3F8E91]">
-              Esta venta tiene <b>{ticketImages.length} boletas</b>: al enviar por WhatsApp se
-              descarga un ZIP con las <b>{ticketImages.length} imágenes</b> (una por boleta).
-              Descomprimilo y adjuntalas todas desde la galería.
+              Esta venta tiene <b>{ticketImages.length} boletas</b>.{" "}
+              {archivosShare.length > 0
+                ? "Tocá “Enviar las boletas por WhatsApp”, elegí WhatsApp y las imágenes salen ya adjuntas (sin descargar ni descomprimir)."
+                : "Se descarga un ZIP con las imágenes (una por boleta): descomprimilo y adjuntalas desde tus archivos."}
             </div>
           ) : null}
           <p className="mb-2 text-[11px] leading-snug text-slate-500">
+            {archivosShare.length > 0
+              ? "En el celular, “Enviar las boletas por WhatsApp” abre la hoja de compartir con todas las imágenes. "
+              : ticketImages.length > 1
+                ? "En la PC, el botón del ZIP baja todas las boletas juntas. "
+                : ""}
             “Enviar por WhatsApp” descarga el ticket y abre el chat del número de la compra con
             el mensaje listo: adjuntá la imagen con 📎 → Galería (por eso esa descarga es PNG).
             “Descargar PDF” guarda el archivo para archivar o imprimir, e “Imprimir / PDF” abre
             el diálogo del sistema con tu impresora.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+            {archivosShare.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => void compartirArchivos()}
+                className="w-full rounded-lg bg-[#25D366] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1FB955] sm:w-auto"
+              >
+                {`📲 Enviar las ${archivosShare.length} boletas por WhatsApp`}
+              </button>
+            ) : null}
             {ticketImages.length > 1 ? (
               <button
                 type="button"

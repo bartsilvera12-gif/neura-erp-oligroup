@@ -71,6 +71,19 @@ export async function GET(
       );
     }
 
+    // `?stream=1`: devuelve los bytes del PNG desde este mismo origen (sin CORS), para que el
+    // navegador pueda armar el ZIP / compartir los archivos.
+    if (new URL(request.url).searchParams.get("stream") === "1") {
+      const upstream = await fetch(signed.url, { cache: "no-store" });
+      if (!upstream.ok) {
+        return NextResponse.json({ ok: false, error: "storage_fetch" }, { status: 502 });
+      }
+      return new NextResponse(await upstream.arrayBuffer(), {
+        status: 200,
+        headers: { "Content-Type": "image/png", "Cache-Control": "private, no-store" },
+      });
+    }
+
     return NextResponse.redirect(signed.url, { status: 302 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Error";

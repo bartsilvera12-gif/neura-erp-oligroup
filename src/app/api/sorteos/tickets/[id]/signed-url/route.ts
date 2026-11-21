@@ -71,7 +71,7 @@ export async function GET(
     }
     const images = imgDefs
       .filter((def) => signedByPath.has(def.path))
-      .map((def) => ({ cupon: def.cupon, url: signedByPath.get(def.path)! }));
+      .map((def) => ({ cupon: def.cupon, url: signedByPath.get(def.path)!, path: def.path }));
     const primaryUrl = signedByPath.get(path) ?? images[0]?.url ?? null;
     if (!primaryUrl) {
       return NextResponse.json(errorResponse("signed_url"), { status: 500 });
