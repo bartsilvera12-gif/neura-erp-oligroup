@@ -312,10 +312,17 @@ export default function TicketConfirmacionModal({
         const central: BlobPart[] = [];
         let offset = 0;
         let centralSize = 0;
-        for (const img of lista) {
-          const resp = await fetch(img.url);
-          if (!resp.ok) throw new Error("fetch");
-          const datos = new Uint8Array(await resp.arrayBuffer());
+        // Se bajan todas en paralelo para que el ZIP salga rápido.
+        const bajadas = await Promise.all(
+          lista.map(async (img) => {
+            const resp = await fetch(img.url);
+            if (!resp.ok) throw new Error("fetch");
+            return new Uint8Array(await resp.arrayBuffer());
+          })
+        );
+        for (let idx = 0; idx < lista.length; idx++) {
+          const img = lista[idx];
+          const datos = bajadas[idx];
           const nombre = enc.encode(nombreDe(img));
           const crc = crc32(datos);
           const lh = new DataView(new ArrayBuffer(30));
