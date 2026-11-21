@@ -142,7 +142,7 @@ export default function SorteoReimprimirMisVentas() {
                 onClick={() => setSel(v)}
                 className="shrink-0 rounded-lg border border-[#4FAEB2] bg-[#4FAEB2]/10 px-3 py-2 text-xs font-semibold text-[#3F8E91] hover:bg-[#4FAEB2]/20"
               >
-                Reimprimir
+                {`Reimprimir orden ${v.numero_orden}`}
               </button>
             </li>
           ))}
