@@ -510,7 +510,7 @@ export default function TicketConfirmacionModal({
       estado: "ok",
       mensaje:
         cantImgs > 1
-          ? `Se descargaron ${cantImgs} imágenes (una por boleta) y se abrió el chat. Adjuntá las ${cantImgs} con 📎 → Galería.`
+          ? `Se descargó un ZIP con las ${cantImgs} imágenes (una por boleta) y se abrió el chat. Descomprimilo y adjuntá las ${cantImgs} con 📎 → Galería.`
           : cantImgs === 1
             ? "Ticket descargado y chat abierto. Adjuntalo con 📎 → Galería."
             : `Chat de ${telefonoCliente || "WhatsApp"} abierto con el mensaje y los números.`,
@@ -685,8 +685,8 @@ export default function TicketConfirmacionModal({
           {ticketImages.length > 1 ? (
             <div className="mb-2 rounded-md border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-3 py-2 text-xs text-[#3F8E91]">
               Esta venta tiene <b>{ticketImages.length} boletas</b>: al enviar por WhatsApp se
-              descargan las <b>{ticketImages.length} imágenes</b> (una por boleta). Adjuntalas todas
-              desde la galería.
+              descarga un ZIP con las <b>{ticketImages.length} imágenes</b> (una por boleta).
+              Descomprimilo y adjuntalas todas desde la galería.
             </div>
           ) : null}
           <p className="mb-2 text-[11px] leading-snug text-slate-500">
@@ -696,6 +696,15 @@ export default function TicketConfirmacionModal({
             el diálogo del sistema con tu impresora.
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+            {ticketImages.length > 1 ? (
+              <button
+                type="button"
+                onClick={descargarTicket}
+                className="w-full rounded-lg border border-[#4FAEB2] bg-[#4FAEB2]/10 px-4 py-2.5 text-sm font-semibold text-[#3F8E91] hover:bg-[#4FAEB2]/20 sm:w-auto"
+              >
+                {`⬇ Descargar ${ticketImages.length} imágenes (ZIP)`}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => void descargarPdf()}
