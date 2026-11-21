@@ -272,16 +272,89 @@ export default function TicketConfirmacionModal({
           : [];
     if (lista.length === 0) return;
     const multi = lista.length > 1;
-    lista.forEach((img, i) => {
-      const nombre =
-        multi && img.cupon
-          ? `ticket-orden-${numeroOrden ?? ""}-${img.cupon}.png`
-          : nombreArchivo;
-      const dlUrl = `${img.url}${img.url.includes("?") ? "&" : "?"}download=${encodeURIComponent(
-        nombre
-      )}`;
-      window.setTimeout(() => dispararDescarga(dlUrl, nombre), i * 450);
-    });
+    const nombreDe = (img: { cupon: string | null }) =>
+      multi && img.cupon
+        ? `ticket-orden-${numeroOrden ?? ""}-${img.cupon}.png`
+        : nombreArchivo;
+
+    /** Plan B: una descarga por imagen, escalonada (puede ser cortada por el navegador si son muchas). */
+    const porSeparado = () => {
+      lista.forEach((img, i) => {
+        const nombre = nombreDe(img);
+        const dlUrl = `${img.url}${img.url.includes("?") ? "&" : "?"}download=${encodeURIComponent(
+          nombre
+        )}`;
+        window.setTimeout(() => dispararDescarga(dlUrl, nombre), i * 1000);
+      });
+    };
+
+    if (!multi) {
+      porSeparado();
+      return;
+    }
+
+    /** Varias boletas: un solo ZIP con todas las imágenes (una única descarga, no la corta el navegador). */
+    void (async () => {
+      try {
+        const crcTable = new Uint32Array(256);
+        for (let n = 0; n < 256; n++) {
+          let c = n;
+          for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          crcTable[n] = c >>> 0;
+        }
+        const crc32 = (d: Uint8Array) => {
+          let c = 0xffffffff;
+          for (let i = 0; i < d.length; i++) c = crcTable[(c ^ d[i]) & 0xff] ^ (c >>> 8);
+          return (c ^ 0xffffffff) >>> 0;
+        };
+        const enc = new TextEncoder();
+        const partes: BlobPart[] = [];
+        const central: BlobPart[] = [];
+        let offset = 0;
+        let centralSize = 0;
+        for (const img of lista) {
+          const resp = await fetch(img.url);
+          if (!resp.ok) throw new Error("fetch");
+          const datos = new Uint8Array(await resp.arrayBuffer());
+          const nombre = enc.encode(nombreDe(img));
+          const crc = crc32(datos);
+          const lh = new DataView(new ArrayBuffer(30));
+          lh.setUint32(0, 0x04034b50, true);
+          lh.setUint16(4, 20, true);
+          lh.setUint16(6, 0x0800, true);
+          lh.setUint32(14, crc, true);
+          lh.setUint32(18, datos.length, true);
+          lh.setUint32(22, datos.length, true);
+          lh.setUint16(26, nombre.length, true);
+          partes.push(lh.buffer, nombre, datos);
+          const ch = new DataView(new ArrayBuffer(46));
+          ch.setUint32(0, 0x02014b50, true);
+          ch.setUint16(4, 20, true);
+          ch.setUint16(6, 20, true);
+          ch.setUint16(8, 0x0800, true);
+          ch.setUint32(16, crc, true);
+          ch.setUint32(20, datos.length, true);
+          ch.setUint32(24, datos.length, true);
+          ch.setUint16(28, nombre.length, true);
+          ch.setUint32(42, offset, true);
+          central.push(ch.buffer, nombre);
+          centralSize += 46 + nombre.length;
+          offset += 30 + nombre.length + datos.length;
+        }
+        const fin = new DataView(new ArrayBuffer(22));
+        fin.setUint32(0, 0x06054b50, true);
+        fin.setUint16(8, lista.length, true);
+        fin.setUint16(10, lista.length, true);
+        fin.setUint32(12, centralSize, true);
+        fin.setUint32(16, offset, true);
+        const blob = new Blob([...partes, ...central, fin.buffer], { type: "application/zip" });
+        const href = URL.createObjectURL(blob);
+        dispararDescarga(href, `boletas-orden-${numeroOrden ?? ""}.zip`);
+        window.setTimeout(() => URL.revokeObjectURL(href), 60000);
+      } catch {
+        porSeparado();
+      }
+    })();
   }, [ticketImages, signedUrl, nombreArchivo, numeroOrden, dispararDescarga]);
 
   /**
