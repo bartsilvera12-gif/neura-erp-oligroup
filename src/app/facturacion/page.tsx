@@ -46,6 +46,7 @@ export default function FacturacionPage() {
   const [ventas, setVentas] = useState<VentaFacturable[]>([]);
   const [facturas, setFacturas] = useState<FacturaRow[]>([]);
   const [sel, setSel] = useState<Set<string>>(new Set());
+  const [busqueda, setBusqueda] = useState("");
   const [ivaTipo, setIvaTipo] = useState("iva_10");
   const [loading, setLoading] = useState(true);
   const [facturando, setFacturando] = useState(false);
@@ -81,7 +82,18 @@ export default function FacturacionPage() {
     () => ventas.filter((v) => sel.has(v.id)).reduce((a, v) => a + (Number(v.monto_total) || 0), 0),
     [ventas, sel]
   );
-  const allSelected = ventas.length > 0 && sel.size === ventas.length;
+  const ventasFiltradas = useMemo(() => {
+    const norm = (t: string | null | undefined) =>
+      (t ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+    const q = norm(busqueda).trim();
+    if (!q) return ventas;
+    const palabras = q.split(/\s+/);
+    return ventas.filter((v) => {
+      const texto = `${norm(v.nombre_participante)} ${norm(v.documento)} ${v.numero_orden ?? ""}`;
+      return palabras.every((p) => texto.includes(p));
+    });
+  }, [ventas, busqueda]);
+  const allSelected = ventasFiltradas.length > 0 && ventasFiltradas.every((v) => sel.has(v.id));
 
   const toggle = (id: string) =>
     setSel((prev) => {
@@ -90,7 +102,13 @@ export default function FacturacionPage() {
       else n.add(id);
       return n;
     });
-  const toggleAll = () => setSel(allSelected ? new Set() : new Set(ventas.map((v) => v.id)));
+  const toggleAll = () =>
+    setSel((prev) => {
+      const n = new Set(prev);
+      if (allSelected) ventasFiltradas.forEach((v) => n.delete(v.id));
+      else ventasFiltradas.forEach((v) => n.add(v.id));
+      return n;
+    });
 
   const facturar = useCallback(async () => {
     if (facturando || sel.size === 0) return;
@@ -194,6 +212,19 @@ export default function FacturacionPage() {
           </div>
         </div>
 
+        <div className="px-5 py-3 border-b border-slate-100">
+          <input
+            type="search"
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar cliente por nombre, razón social o documento/RUC"
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-[#4FAEB2] focus:ring-2 focus:ring-[#4FAEB2]/20"
+          />
+          {busqueda.trim() ? (
+            <p className="text-xs text-slate-500 mt-1">{ventasFiltradas.length} coincidencia(s)</p>
+          ) : null}
+        </div>
+
         {sel.size > 0 ? (
           <div className="px-5 py-2 bg-[#4FAEB2]/5 border-b border-slate-100 text-xs text-slate-600">
             Seleccionadas: <b>{sel.size}</b> · Total: <b>{gs(totalSel)}</b>
@@ -221,14 +252,14 @@ export default function FacturacionPage() {
                     Cargando…
                   </td>
                 </tr>
-              ) : ventas.length === 0 ? (
+              ) : ventasFiltradas.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
-                    No hay ventas pendientes de facturar.
+                    {ventas.length === 0 ? "No hay ventas pendientes de facturar." : "Ninguna venta coincide con la búsqueda."}
                   </td>
                 </tr>
               ) : (
-                ventas.map((v) => (
+                ventasFiltradas.map((v) => (
                   <tr key={v.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                     <td className="px-4 py-2.5">
                       <input
