@@ -5,6 +5,22 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 import { getSorteos } from "@/lib/sorteos/actions";
 import type { Sorteo } from "@/lib/sorteos/types";
+import TicketConfirmacionModal from "@/components/sorteos/TicketConfirmacionModal";
+
+type VentaImprimir = {
+  entrada_id: string;
+  numero_orden: number;
+  sorteo_id: string;
+  sorteo_nombre: string;
+  precio_boleto: number | null;
+  nombre_participante: string | null;
+  documento: string | null;
+  whatsapp: string | null;
+  ciudad: string | null;
+  monto_total: number;
+  cupones: string[];
+  delivery_id: string | null;
+};
 
 type WindowStatus = "open" | "expired" | "unknown";
 
@@ -97,6 +113,7 @@ export default function SorteosTicketsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  const [ventaImprimir, setVentaImprimir] = useState<VentaImprimir | null>(null);
 
   // 1) Carga inicial de sorteos para el selector + default activo más reciente.
   useEffect(() => {
@@ -175,6 +192,26 @@ export default function SorteosTicketsPage() {
       window.open(json.data.url, "_blank", "noopener,noreferrer");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Error al obtener URL firmada");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /** Abre la boleta ya generada de la orden (sin crear venta ni números nuevos) para imprimirla. */
+  async function imprimirBoleta(r: TicketRow) {
+    setBusyId(r.id);
+    setErr(null);
+    try {
+      const res = await fetchWithSupabaseSession(
+        `/api/sorteos/mis-ventas?entrada_id=${encodeURIComponent(r.entrada_id)}`,
+        { cache: "no-store" },
+      );
+      const json = (await res.json()) as { success?: boolean; data?: VentaImprimir[]; error?: string };
+      const v = json.data?.[0];
+      if (!res.ok || !json.success || !v) throw new Error(json.error || "No se encontró la boleta de esta orden");
+      setVentaImprimir({ ...v, delivery_id: v.delivery_id ?? r.id });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Error al abrir la boleta");
     } finally {
       setBusyId(null);
     }
@@ -371,6 +408,7 @@ export default function SorteosTicketsPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50/80 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">
                 <tr>
+                  <th className="px-4 py-3">N°</th>
                   <th className="px-4 py-3">Estado</th>
                   <th className="px-4 py-3">Orden</th>
                   <th className="px-4 py-3">Cliente</th>
@@ -380,7 +418,7 @@ export default function SorteosTicketsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {rows.map((r) => {
+                {rows.map((r, idx) => {
                   const meta = statusMeta(r.status);
                   const wStatus = r.whatsapp_window_status;
                   const resendDisabled = busyId === r.id || wStatus !== "open";
@@ -392,6 +430,7 @@ export default function SorteosTicketsPage() {
                         : "No se pudo determinar la ventana de 24h. Para reenviar se requiere plantilla aprobada.";
                   return (
                     <tr key={r.id} className="transition-colors hover:bg-[#4FAEB2]/5">
+                      <td className="px-4 py-3 text-xs font-semibold text-slate-500">{idx + 1}</td>
                       <td className="px-4 py-3">
                         <span
                           className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${meta.chip}`}
@@ -429,6 +468,14 @@ export default function SorteosTicketsPage() {
                           </button>
                           <button
                             type="button"
+                            disabled={busyId === r.id}
+                            onClick={() => void imprimirBoleta(r)}
+                            className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Imprimir boleta
+                          </button>
+                          <button
+                            type="button"
                             disabled={resendDisabled}
                             onClick={() => void resendTicket(r.id)}
                             title={resendTitle}
@@ -451,7 +498,7 @@ export default function SorteosTicketsPage() {
                 })}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-12 text-center text-sm text-slate-400">
+                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-slate-400">
                       Sin registros
                     </td>
                   </tr>
@@ -461,6 +508,22 @@ export default function SorteosTicketsPage() {
           </div>
         )}
       </div>
+
+      <TicketConfirmacionModal
+        open={ventaImprimir !== null}
+        onClose={() => setVentaImprimir(null)}
+        deliveryId={ventaImprimir?.delivery_id ?? null}
+        numeroOrden={ventaImprimir?.numero_orden ?? null}
+        telefonoCliente={ventaImprimir?.whatsapp ?? ""}
+        nombreCliente={ventaImprimir?.nombre_participante ?? ""}
+        cupones={ventaImprimir?.cupones ?? []}
+        montoTotal={ventaImprimir?.monto_total ?? 0}
+        documentoCliente={ventaImprimir?.documento ?? ""}
+        sorteoNombre={ventaImprimir?.sorteo_nombre ?? ""}
+        sorteoId={ventaImprimir?.sorteo_id ?? ""}
+        ciudad={ventaImprimir?.ciudad ?? ""}
+        precioBoleto={ventaImprimir?.precio_boleto ?? null}
+      />
 
       {/* TODO Fase 2: cuando la ventana WA esté vencida, ofrecer botón
           "Enviar por plantilla" usando una HSM Meta aprobada (campaign template).

@@ -52,12 +52,19 @@ export async function GET(request: NextRequest) {
     // busca en TODA la empresa, para poder reimprimir también las boletas generadas por el bot
     // (transferencias: validado_por_user_id queda NULL), no solo las propias del operador.
     let userFilter = "";
-    if (!qRaw) {
+    const entradaIdRaw = (request.nextUrl.searchParams.get("entrada_id") ?? "").trim();
+    const entradaIdOk = /^[0-9a-f-]{36}$/i.test(entradaIdRaw);
+    let whereEntrada = "";
+    if (entradaIdOk) {
+      // Reimprimir una orden puntual (ej. desde Sorteos > Tickets): no filtra por usuario.
+      params.push(entradaIdRaw);
+      whereEntrada = `AND e.id = $${params.length}::uuid`;
+    } else if (!qRaw) {
       params.push(usuarioId);
       userFilter = `AND e.validado_por_user_id = $${params.length}::uuid`;
     }
     let whereQ = "";
-    if (qRaw) {
+    if (qRaw && !entradaIdOk) {
       const term = `%${qRaw.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")}%`;
       params.push(term);
       const p = params.length;
@@ -96,6 +103,7 @@ export async function GET(request: NextRequest) {
       INNER JOIN ${tSor} so ON so.id = e.sorteo_id AND so.empresa_id = e.empresa_id
       WHERE e.empresa_id = $1::uuid
         ${userFilter}
+        ${whereEntrada}
         ${whereQ}
       ORDER BY e.created_at DESC NULLS LAST
       LIMIT ${MAX}
