@@ -15,7 +15,7 @@ export type PrintFormat = "thermal_58" | "thermal_80" | "a4" | "oficio";
 
 const PRINT_FORMAT_STORAGE_KEY = "neura:sorteos:physical-coupons:print-format";
 const THERMAL_CUT_STORAGE_KEY = "neura:sorteos:physical-coupons:thermal-cut-each";
-const DEFAULT_PRINT_FORMAT: PrintFormat = "a4";
+const DEFAULT_PRINT_FORMAT: PrintFormat = "thermal_80";
 
 const PRINT_FORMAT_OPTIONS: { value: PrintFormat; label: string; help: string }[] = [
   {
@@ -575,6 +575,18 @@ export default function PhysicalCouponsPrintClient({
     w.document.close();
     const runPrint = () => {
       try {
+        /* Impresoras de hoja grande ignoran `size: 80mm auto` y vuelven a A4: se fija el tamaño exacto del cupón. */
+        if (isThermal) {
+          const unit = w.document.querySelector(".thermal-unit, .coupon-card") as HTMLElement | null;
+          if (unit) {
+            const hMm = (unit.getBoundingClientRect().height * 25.4) / 96;
+            const st = w.document.createElement("style");
+            st.textContent = thermalCutEachCoupon
+              ? `@page { size: ${thermalWidthMm}mm ${Math.ceil(hMm + 8)}mm; margin: 2mm; }`
+              : `@page { size: ${thermalWidthMm}mm 297mm; margin: 2mm; }`;
+            w.document.head.appendChild(st);
+          }
+        }
         w.focus();
         w.print();
       } catch {
