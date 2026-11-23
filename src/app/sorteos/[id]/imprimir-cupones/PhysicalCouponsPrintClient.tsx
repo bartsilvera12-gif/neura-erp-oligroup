@@ -510,7 +510,8 @@ export default function PhysicalCouponsPrintClient({
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(PRINT_FORMAT_STORAGE_KEY);
-      if (isPrintFormat(stored)) {
+      /* Impresión de una boleta puntual: siempre ticket (no se hereda A4/oficio de otra tanda). */
+      if (isPrintFormat(stored) && !(modoEntrada && (stored === "a4" || stored === "oficio"))) {
         setSelectedPrintFormat(stored);
       }
       const cut = window.localStorage.getItem(THERMAL_CUT_STORAGE_KEY);
@@ -545,6 +546,8 @@ export default function PhysicalCouponsPrintClient({
     [selectedPrintFormat]
   );
 
+  /* Boleta puntual: página del alto exacto de la boleta (no una hoja larga). */
+  const cortarCadaCupon = thermalCutEachCoupon || modoEntrada;
   const layout = FORMAT_LAYOUTS[selectedPrintFormat];
   const isThermal = layout.kind === "thermal";
   const thermalWidthMm = selectedPrintFormat === "thermal_58" ? 58 : 80;
@@ -559,7 +562,7 @@ export default function PhysicalCouponsPrintClient({
       rows,
       title,
       selectedPrintFormat,
-      isThermal && thermalCutEachCoupon,
+      isThermal && cortarCadaCupon,
       isThermal ? { logoDataUrl, qrDataUrl } : undefined
     );
     /* Sin noopener en features: si no, algunos navegadores devuelven null y no podemos llamar a print(). */
@@ -581,7 +584,7 @@ export default function PhysicalCouponsPrintClient({
           if (unit) {
             const hMm = (unit.getBoundingClientRect().height * 25.4) / 96;
             const st = w.document.createElement("style");
-            st.textContent = thermalCutEachCoupon
+            st.textContent = cortarCadaCupon
               ? `@page { size: ${thermalWidthMm}mm ${Math.ceil(hMm + 8)}mm; margin: 2mm; }`
               : `@page { size: ${thermalWidthMm}mm 297mm; margin: 2mm; }`;
             w.document.head.appendChild(st);
