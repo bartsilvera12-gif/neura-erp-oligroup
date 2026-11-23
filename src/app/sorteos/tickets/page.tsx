@@ -113,6 +113,7 @@ export default function SorteosTicketsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [total, setTotal] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  const [offset, setOffset] = useState(0);
   const [ventaImprimir, setVentaImprimir] = useState<VentaImprimir | null>(null);
 
   // 1) Carga inicial de sorteos para el selector + default activo más reciente.
@@ -137,7 +138,7 @@ export default function SorteosTicketsPage() {
     };
   }, []);
 
-  async function load(opts: { sorteoId: string; status: string; q: string }) {
+  async function load(opts: { sorteoId: string; status: string; q: string }, newOffset = 0) {
     setLoading(true);
     setErr(null);
     try {
@@ -148,7 +149,7 @@ export default function SorteosTicketsPage() {
       if (opts.status.trim()) sp.set("status", opts.status.trim());
       if (opts.q.trim()) sp.set("q", opts.q.trim());
       sp.set("limit", String(PAGE_SIZE));
-      sp.set("offset", "0");
+      sp.set("offset", String(newOffset));
 
       const res = await fetchWithSupabaseSession(`/api/sorteos/tickets?${sp.toString()}`, {
         cache: "no-store",
@@ -160,6 +161,7 @@ export default function SorteosTicketsPage() {
       setRows(Array.isArray(json.data) ? json.data : []);
       setTotal(typeof json.total === "number" ? json.total : null);
       setHasMore(Boolean(json.hasMore));
+      setOffset(newOffset);
     } catch (e) {
       setRows([]);
       setTotal(null);
@@ -391,11 +393,28 @@ export default function SorteosTicketsPage() {
               Tickets
             </h2>
           </div>
-          <span className="inline-flex items-center gap-1 rounded-full border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-2.5 py-0.5 text-[11px] font-semibold text-[#3F8E91]">
-            {rows.length}
-            {typeof total === "number" && total > rows.length ? ` de ${total}` : ""}
-            {hasMore ? " · hay más" : ""}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-2.5 py-0.5 text-[11px] font-semibold text-[#3F8E91]">
+              {rows.length > 0 ? `${offset + 1}–${offset + rows.length}` : "0"}
+              {typeof total === "number" ? ` de ${total}` : ""}
+            </span>
+            <button
+              type="button"
+              disabled={loading || offset === 0}
+              onClick={() => void load({ sorteoId, status, q }, Math.max(0, offset - PAGE_SIZE))}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ← Anterior
+            </button>
+            <button
+              type="button"
+              disabled={loading || !hasMore}
+              onClick={() => void load({ sorteoId, status, q }, offset + PAGE_SIZE)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Siguiente →
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -430,7 +449,7 @@ export default function SorteosTicketsPage() {
                         : "No se pudo determinar la ventana de 24h. Para reenviar se requiere plantilla aprobada.";
                   return (
                     <tr key={r.id} className="transition-colors hover:bg-[#4FAEB2]/5">
-                      <td className="px-4 py-3 text-xs font-semibold text-slate-500">{idx + 1}</td>
+                      <td className="px-4 py-3 text-xs font-semibold text-slate-500">{offset + idx + 1}</td>
                       <td className="px-4 py-3">
                         <span
                           className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${meta.chip}`}

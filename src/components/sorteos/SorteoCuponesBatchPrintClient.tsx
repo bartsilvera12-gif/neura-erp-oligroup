@@ -6,6 +6,8 @@ import type { SorteoCuponOrdenRow } from "@/lib/sorteos/types";
 import SorteoCuponesPagoCell from "@/components/sorteos/SorteoCuponesPagoCell";
 import SorteoCuponesImpresionCell from "@/components/sorteos/SorteoCuponesImpresionCell";
 import SorteoCuponesCancelarCell from "@/components/sorteos/SorteoCuponesCancelarCell";
+import TicketConfirmacionModal from "@/components/sorteos/TicketConfirmacionModal";
+import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
 
 /** Sobre este umbral, "Imprimir todos los filtrados" pide confirmación. */
 const CONFIRM_TODOS_THRESHOLD = 300;
@@ -27,6 +29,21 @@ function formatFecha(iso: string) {
     return iso;
   }
 }
+
+type VentaImprimir = {
+  entrada_id: string;
+  numero_orden: number;
+  sorteo_id: string;
+  sorteo_nombre: string;
+  precio_boleto: number | null;
+  nombre_participante: string | null;
+  documento: string | null;
+  whatsapp: string | null;
+  ciudad: string | null;
+  monto_total: number;
+  cupones: string[];
+  delivery_id: string | null;
+};
 
 function openPrintWindow(url: string) {
   // Nueva pestaña: mantiene la lista de cupones abierta detrás.
@@ -53,6 +70,30 @@ export default function SorteoCuponesBatchPrintClient({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [ordenDesde, setOrdenDesde] = useState("");
   const [ordenHasta, setOrdenHasta] = useState("");
+  const [ventaImprimir, setVentaImprimir] = useState<VentaImprimir | null>(null);
+  const [busyBoletaId, setBusyBoletaId] = useState<string | null>(null);
+
+  /** Abre la boleta ya generada de la orden (sin crear venta ni números nuevos). */
+  async function imprimirBoleta(entradaId: string) {
+    setBusyBoletaId(entradaId);
+    try {
+      const res = await fetchWithSupabaseSession(
+        `/api/sorteos/mis-ventas?entrada_id=${encodeURIComponent(entradaId)}`,
+        { cache: "no-store" }
+      );
+      const json = (await res.json()) as { success?: boolean; data?: VentaImprimir[]; error?: string };
+      const v = json.data?.[0];
+      if (!res.ok || !json.success || !v) {
+        window.alert(json.error || "No se encontró la boleta de esta orden");
+        return;
+      }
+      setVentaImprimir(v);
+    } catch {
+      window.alert("Error al abrir la boleta");
+    } finally {
+      setBusyBoletaId(null);
+    }
+  }
 
   const visibleIds = useMemo(() => rows.map((r) => r.entrada_id), [rows]);
   const allVisibleSelected =
@@ -253,6 +294,7 @@ export default function SorteoCuponesBatchPrintClient({
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Impresión</th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Pago</th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Fecha</th>
+                  <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Boleta</th>
                   <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Chat</th>
                   {esAdmin ? (
                     <th className="px-5 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">Acción</th>
@@ -299,6 +341,16 @@ export default function SorteoCuponesBatchPrintClient({
                       <SorteoCuponesPagoCell entradaId={r.entrada_id} estadoPago={r.estado_pago} />
                       <td className="px-5 py-3 text-sm text-slate-600 whitespace-nowrap">{formatFecha(r.created_at)}</td>
                       <td className="px-5 py-3 text-sm">
+                        <button
+                          type="button"
+                          disabled={busyBoletaId === r.entrada_id}
+                          onClick={() => void imprimirBoleta(r.entrada_id)}
+                          className="whitespace-nowrap rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Imprimir boleta
+                        </button>
+                      </td>
+                      <td className="px-5 py-3 text-sm">
                         {r.chat_conversation_id ? (
                           <Link
                             href={`/dashboard/conversaciones?conversationId=${encodeURIComponent(r.chat_conversation_id)}`}
@@ -325,6 +377,22 @@ export default function SorteoCuponesBatchPrintClient({
           </div>
         )}
       </div>
+
+      <TicketConfirmacionModal
+        open={ventaImprimir !== null}
+        onClose={() => setVentaImprimir(null)}
+        deliveryId={ventaImprimir?.delivery_id ?? null}
+        numeroOrden={ventaImprimir?.numero_orden ?? null}
+        telefonoCliente={ventaImprimir?.whatsapp ?? ""}
+        nombreCliente={ventaImprimir?.nombre_participante ?? ""}
+        cupones={ventaImprimir?.cupones ?? []}
+        montoTotal={ventaImprimir?.monto_total ?? 0}
+        documentoCliente={ventaImprimir?.documento ?? ""}
+        sorteoNombre={ventaImprimir?.sorteo_nombre ?? ""}
+        sorteoId={ventaImprimir?.sorteo_id ?? ""}
+        ciudad={ventaImprimir?.ciudad ?? ""}
+        precioBoleto={ventaImprimir?.precio_boleto ?? null}
+      />
     </div>
   );
 }
