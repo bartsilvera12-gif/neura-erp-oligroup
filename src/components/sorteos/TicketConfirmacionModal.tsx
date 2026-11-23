@@ -617,14 +617,36 @@ export default function TicketConfirmacionModal({
     iframe.style.position = "fixed";
     iframe.style.right = "0";
     iframe.style.bottom = "0";
-    iframe.style.width = "0";
+    /** Ancho de ticket (80 mm) para que el contenido se mida con el ancho real del papel. */
+    iframe.style.width = cuponesFisicos.length > 0 ? "80mm" : "0";
     iframe.style.height = "0";
     iframe.style.border = "0";
+    iframe.style.opacity = "0";
+    iframe.style.pointerEvents = "none";
     iframe.srcdoc = doc;
 
     iframe.onload = () => {
       const win = iframe.contentWindow;
       if (!win) return;
+      /**
+       * Con impresoras de hoja grande, `@page { size: 80mm auto }` no alcanza: el navegador
+       * vuelve a A4. Se fija un tamaño explícito 80 mm de ancho x alto de cada boleta
+       * (cada boleta sale en su propia página, con corte entre una y otra).
+       */
+      if (cuponesFisicos.length > 0) {
+        try {
+          const unit = iframe.contentDocument?.querySelector(".thermal-unit") as HTMLElement | null;
+          if (unit) {
+            const hMm = (unit.getBoundingClientRect().height * 25.4) / 96;
+            const pageH = Math.ceil(hMm + 4 + 2);
+            const st = iframe.contentDocument!.createElement("style");
+            st.textContent = `@page { size: 80mm ${pageH}mm; margin: 2mm; }`;
+            iframe.contentDocument!.head.appendChild(st);
+          }
+        } catch {
+          /* si no se puede medir, queda el tamaño automático */
+        }
+      }
       const lanzar = () => {
         win.focus();
         win.print();
