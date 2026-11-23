@@ -314,7 +314,7 @@ export default function TicketConfirmacionModal({
    * incluye el número de cupón para distinguirlas. La descarga es escalonada: algunos
    * navegadores cancelan descargas múltiples disparadas en el mismo instante.
    */
-  const descargarTicket = useCallback(() => {
+  const descargarTicket = useCallback((separado: boolean = false) => {
     const lista =
       ticketImages.length > 0
         ? ticketImages
@@ -339,7 +339,7 @@ export default function TicketConfirmacionModal({
       });
     };
 
-    if (!multi) {
+    if (!multi || separado === true) {
       porSeparado();
       return;
     }
@@ -370,8 +370,26 @@ export default function TicketConfirmacionModal({
    * Celular: las imágenes ya bajadas (File) se comparten con la hoja nativa. Se precargan al
    * abrir el modal para que `navigator.share` salga dentro del mismo toque del usuario.
    */
+  const abrirWaMe = useCallback(() => {
+    const base = waDigits ? `https://wa.me/${waDigits}` : "https://wa.me/";
+    window.open(`${base}?text=${encodeURIComponent(mensaje)}`, "_blank", "noopener,noreferrer");
+  }, [waDigits, mensaje]);
+
   const compartirArchivos = useCallback(async () => {
     if (archivosShare.length === 0) return;
+    /**
+     * Con teléfono en la compra NO se usa la hoja nativa (obliga a elegir el contacto, que
+     * tiene que estar agendado): se bajan las imágenes y se abre el chat directo al número.
+     */
+    if (waDigits) {
+      descargarTicket(true);
+      abrirWaMe();
+      setEnvio({
+        estado: "ok",
+        mensaje: `Se abrió el chat de ${telefonoCliente || "WhatsApp"} y se bajaron las ${archivosShare.length} imágenes a tu galería. Adjuntalas con 📎 → Galería.`,
+      });
+      return;
+    }
     try {
       await navigator.share({
         files: archivosShare,
@@ -382,7 +400,7 @@ export default function TicketConfirmacionModal({
       if (e instanceof DOMException && e.name === "AbortError") return;
       setEnvio({ estado: "error", mensaje: "No se pudo abrir la hoja de compartir." });
     }
-  }, [archivosShare, mensaje]);
+  }, [archivosShare, mensaje, waDigits, descargarTicket, abrirWaMe, telefonoCliente]);
 
   /**
    * PDF de verdad, para archivar o mandar a imprimir. Se arma en el navegador con pdf-lib,
@@ -509,11 +527,6 @@ export default function TicketConfirmacionModal({
     nombrePdf,
     dispararDescarga,
   ]);
-
-  const abrirWaMe = useCallback(() => {
-    const base = waDigits ? `https://wa.me/${waDigits}` : "https://wa.me/";
-    window.open(`${base}?text=${encodeURIComponent(mensaje)}`, "_blank", "noopener,noreferrer");
-  }, [waDigits, mensaje]);
 
   /**
    * Flujo de envío, deliberadamente simple porque es el único que funciona igual en todos
@@ -713,7 +726,9 @@ export default function TicketConfirmacionModal({
             <div className="mb-2 rounded-md border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-3 py-2 text-xs text-[#3F8E91]">
               Esta venta tiene <b>{ticketImages.length} boletas</b>.{" "}
               {archivosShare.length > 0
-                ? "Tocá “Enviar las boletas por WhatsApp”, elegí WhatsApp y las imágenes salen ya adjuntas (sin descargar ni descomprimir)."
+                ? waDigits
+                  ? "Tocá “Enviar las boletas por WhatsApp”: se abre el chat del número de la compra (sin agendarlo) y las imágenes se bajan a tu galería para adjuntarlas."
+                  : "Tocá “Enviar las boletas por WhatsApp”, elegí WhatsApp y las imágenes salen ya adjuntas (sin descargar ni descomprimir)."
                 : "Se descarga un ZIP con las imágenes (una por boleta): descomprimilo y adjuntalas desde tus archivos."}
             </div>
           ) : null}
@@ -741,7 +756,7 @@ export default function TicketConfirmacionModal({
             {ticketImages.length > 1 ? (
               <button
                 type="button"
-                onClick={descargarTicket}
+                onClick={() => descargarTicket()}
                 className="w-full rounded-lg border border-[#4FAEB2] bg-[#4FAEB2]/10 px-4 py-2.5 text-sm font-semibold text-[#3F8E91] hover:bg-[#4FAEB2]/20 sm:w-auto"
               >
                 {`⬇ Descargar ${ticketImages.length} imágenes (ZIP)`}
