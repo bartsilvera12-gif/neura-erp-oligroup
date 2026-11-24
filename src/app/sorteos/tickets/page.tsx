@@ -6,6 +6,9 @@ import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session"
 import { getSorteos } from "@/lib/sorteos/actions";
 import type { Sorteo } from "@/lib/sorteos/types";
 import TicketConfirmacionModal from "@/components/sorteos/TicketConfirmacionModal";
+import QRCode from "qrcode";
+import type { PhysicalCouponPrintRow } from "@/lib/sorteos/physical-coupons-print";
+import { buildPhysicalCouponsPrintDocument } from "@/app/sorteos/[id]/imprimir-cupones/PhysicalCouponsPrintClient";
 
 type VentaImprimir = {
   entrada_id: string;
@@ -115,6 +118,8 @@ export default function SorteosTicketsPage() {
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
   const [ventaImprimir, setVentaImprimir] = useState<VentaImprimir | null>(null);
+  const [seleccion, setSeleccion] = useState<Set<string>>(new Set());
+  const [imprimiendo, setImprimiendo] = useState(false);
 
   // 1) Carga inicial de sorteos para el selector + default activo más reciente.
   useEffect(() => {
@@ -158,6 +163,7 @@ export default function SorteosTicketsPage() {
       if (!res.ok || !json.success) {
         throw new Error(json.error?.trim() || `No se pudo cargar (${res.status})`);
       }
+      setSeleccion(new Set());
       setRows(Array.isArray(json.data) ? json.data : []);
       setTotal(typeof json.total === "number" ? json.total : null);
       setHasMore(Boolean(json.hasMore));
@@ -216,6 +222,129 @@ export default function SorteosTicketsPage() {
       setErr(e instanceof Error ? e.message : "Error al abrir la boleta");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  function toggleSel(id: string) {
+    setSeleccion((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+
+  const todasMarcadas = rows.length > 0 && rows.every((r) => seleccion.has(r.id));
+  function toggleTodas() {
+    setSeleccion(todasMarcadas ? new Set() : new Set(rows.map((r) => r.id)));
+  }
+
+  /**
+   * Imprime varias boletas de una vez en formato ticket 80 mm: cada boleta (cada número) sale en su
+   * propia página, con corte entre una y otra. Usa el mismo formato que la impresión individual.
+   */
+  async function imprimirSeleccionadas() {
+    const elegidas = rows.filter((r) => seleccion.has(r.id));
+    if (elegidas.length === 0) return;
+    setImprimiendo(true);
+    setErr(null);
+    try {
+      const filas: PhysicalCouponPrintRow[] = [];
+      let sorteoBranding = "";
+      for (const r of elegidas) {
+        const res = await fetchWithSupabaseSession(
+          `/api/sorteos/mis-ventas?entrada_id=${encodeURIComponent(r.entrada_id)}`,
+          { cache: "no-store" },
+        );
+        const json = (await res.json()) as { success?: boolean; data?: (VentaImprimir & { created_at?: string })[] };
+        const v = json.data?.[0];
+        if (!res.ok || !json.success || !v) {
+          throw new Error(`No se encontró la boleta de la orden ${r.numero_orden ?? ""}`);
+        }
+        if (!sorteoBranding) sorteoBranding = v.sorteo_id;
+        let fecha = "";
+        try {
+          fecha = new Date(v.created_at || Date.now()).toLocaleString("es-PY", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+        } catch {
+          fecha = "";
+        }
+        for (const c of v.cupones) {
+          filas.push({
+            cupon_id: c,
+            numero_cupon: c,
+            sorteo_nombre: v.sorteo_nombre,
+            numero_orden: v.numero_orden,
+            nombre_participante: v.nombre_participante || null,
+            documento: v.documento || null,
+            whatsapp: v.whatsapp || null,
+            ciudad: v.ciudad || null,
+            precio_boleto: v.precio_boleto ?? null,
+            fecha_display: fecha,
+          });
+        }
+      }
+      if (filas.length === 0) throw new Error("Las órdenes elegidas no tienen boletas para imprimir");
+
+      let logoDataUrl: string | null = null;
+      let qrDataUrl: string | null = null;
+      try {
+        const rb = await fetchWithSupabaseSession(
+          `/api/sorteos/print-branding?sorteo_id=${encodeURIComponent(sorteoBranding)}`,
+          { cache: "no-store" },
+        );
+        const jb = (await rb.json()) as {
+          success?: boolean;
+          data?: { logoDataUrl?: string | null; qrUrl?: string | null };
+        };
+        if (rb.ok && jb.success) {
+          logoDataUrl = jb.data?.logoDataUrl ?? null;
+          const qrUrl = (jb.data?.qrUrl ?? "").trim();
+          if (qrUrl) {
+            qrDataUrl = await QRCode.toDataURL(qrUrl, { margin: 1, width: 320, errorCorrectionLevel: "M" });
+          }
+        }
+      } catch {
+        /* sin branding: igual imprime */
+      }
+
+      const doc = buildPhysicalCouponsPrintDocument(filas, "Boletas seleccionadas", "thermal_80", true, {
+        logoDataUrl,
+        qrDataUrl,
+      });
+      const iframe = document.createElement("iframe");
+      iframe.setAttribute("aria-hidden", "true");
+      iframe.style.cssText =
+        "position:fixed;right:0;bottom:0;width:80mm;height:0;border:0;opacity:0;pointer-events:none";
+      iframe.srcdoc = doc;
+      iframe.onload = () => {
+        const win = iframe.contentWindow;
+        if (!win) return;
+        try {
+          const unit = iframe.contentDocument?.querySelector(".thermal-unit") as HTMLElement | null;
+          if (unit) {
+            const hMm = (unit.getBoundingClientRect().height * 25.4) / 96;
+            const st = iframe.contentDocument!.createElement("style");
+            st.textContent = `@page { size: 80mm ${Math.ceil(hMm + 6)}mm; margin: 2mm; }`;
+            iframe.contentDocument!.head.appendChild(st);
+          }
+        } catch {
+          /* tamaño automático */
+        }
+        win.focus();
+        win.print();
+        window.setTimeout(() => iframe.remove(), 60_000);
+      };
+      document.body.appendChild(iframe);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Error al imprimir las boletas");
+    } finally {
+      setImprimiendo(false);
     }
   }
 
@@ -394,6 +523,14 @@ export default function SorteosTicketsPage() {
             </h2>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={seleccion.size === 0 || imprimiendo}
+              onClick={() => void imprimirSeleccionadas()}
+              className="rounded-lg bg-[#4FAEB2] px-3 py-1 text-[11px] font-semibold text-white shadow-sm hover:bg-[#3F8E91] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {imprimiendo ? "Preparando…" : `Imprimir seleccionadas (${seleccion.size})`}
+            </button>
             <span className="inline-flex items-center gap-1 rounded-full border border-[#4FAEB2]/30 bg-[#4FAEB2]/10 px-2.5 py-0.5 text-[11px] font-semibold text-[#3F8E91]">
               {rows.length > 0 ? `${offset + 1}–${offset + rows.length}` : "0"}
               {typeof total === "number" ? ` de ${total}` : ""}
@@ -427,6 +564,16 @@ export default function SorteosTicketsPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50/80 text-left text-[10px] font-semibold uppercase tracking-[0.1em] text-slate-500">
                 <tr>
+                  <th className="px-4 py-3">
+                    <label className="inline-flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={todasMarcadas}
+                        onChange={toggleTodas}
+                      />
+                      <span>Seleccionar todas</span>
+                    </label>
+                  </th>
                   <th className="px-4 py-3">N°</th>
                   <th className="px-4 py-3">Estado</th>
                   <th className="px-4 py-3">Orden</th>
@@ -449,6 +596,14 @@ export default function SorteosTicketsPage() {
                         : "No se pudo determinar la ventana de 24h. Para reenviar se requiere plantilla aprobada.";
                   return (
                     <tr key={r.id} className="transition-colors hover:bg-[#4FAEB2]/5">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          aria-label={`Seleccionar orden ${r.numero_orden ?? idx + 1}`}
+                          checked={seleccion.has(r.id)}
+                          onChange={() => toggleSel(r.id)}
+                        />
+                      </td>
                       <td className="px-4 py-3 text-xs font-semibold text-slate-500">{offset + idx + 1}</td>
                       <td className="px-4 py-3">
                         <span
@@ -517,7 +672,7 @@ export default function SorteosTicketsPage() {
                 })}
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-slate-400">
+                    <td colSpan={8} className="px-4 py-12 text-center text-sm text-slate-400">
                       Sin registros
                     </td>
                   </tr>
