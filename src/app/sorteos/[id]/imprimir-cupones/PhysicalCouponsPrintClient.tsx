@@ -14,7 +14,7 @@ import type { SorteoEntradaEstadoPago } from "@/lib/sorteos/types";
 export type PrintFormat = "thermal_58" | "thermal_80" | "a4" | "oficio";
 
 const PRINT_FORMAT_STORAGE_KEY = "neura:sorteos:physical-coupons:print-format";
-const THERMAL_CUT_STORAGE_KEY = "neura:sorteos:physical-coupons:thermal-cut-each";
+const THERMAL_CUT_STORAGE_KEY = "neura:sorteos:physical-coupons:thermal-cut-each-v2";
 const DEFAULT_PRINT_FORMAT: PrintFormat = "thermal_80";
 
 const PRINT_FORMAT_OPTIONS: { value: PrintFormat; label: string; help: string }[] = [
@@ -468,7 +468,7 @@ export default function PhysicalCouponsPrintClient({
 
   const [selectedPrintFormat, setSelectedPrintFormat] = useState<PrintFormat>(DEFAULT_PRINT_FORMAT);
   const [formatHydrated, setFormatHydrated] = useState(false);
-  const [thermalCutEachCoupon, setThermalCutEachCoupon] = useState<boolean>(false);
+  const [thermalCutEachCoupon, setThermalCutEachCoupon] = useState<boolean>(true);
 
   const [confirmPending, setConfirmPending] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
@@ -515,7 +515,7 @@ export default function PhysicalCouponsPrintClient({
         setSelectedPrintFormat(stored);
       }
       const cut = window.localStorage.getItem(THERMAL_CUT_STORAGE_KEY);
-      if (cut === "1") setThermalCutEachCoupon(true);
+      if (cut === "0") setThermalCutEachCoupon(false);
     } catch {
       /* localStorage no disponible */
     }
