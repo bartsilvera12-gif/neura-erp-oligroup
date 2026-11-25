@@ -1253,6 +1253,25 @@ export async function processInboundWebhookValue(
         flow_status: convFlowStatus,
       };
 
+      if (keywordHandoffPendingConfirmation) {
+        // Persistir el pase a humano: antes solo quedaba en memoria y el chat seguía en Bot.
+        const { error: handoffPersistErr } = await supabase
+          .from("chat_conversations")
+          .update({
+            flow_status: "human",
+            human_taken_over: true,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", conversationId)
+          .eq("empresa_id", empresaId);
+        if (handoffPersistErr) {
+          console.warn(CONV_LOG, "human_handoff_persist_failed", {
+            conversationId,
+            err: handoffPersistErr.message,
+          });
+        }
+      }
+
       if (convFlow?.trim() && !convHuman && convFlowStatus !== "human") {
         const ensuredSid = await ensureActiveFlowSessionForConversation(
           supabase,

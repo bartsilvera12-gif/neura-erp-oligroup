@@ -715,8 +715,9 @@ export async function runComprobanteValidationPipeline(ctx: PipelineCtx): Promis
     settings.validar_datos_bancarios_ocr &&
     bankFlowResult.audit.bank_val_status === "omitido_sin_ocr_bancario"
   ) {
-    // Una imagen sin ningún dato bancario legible no se acepta como pago confirmado.
-    estado = "revision_manual";
+    // Una imagen sin ningún dato bancario legible (no es un comprobante) se RECHAZA:
+    // el cliente puede reenviar otra imagen o hablar con un asesor.
+    estado = "datos_bancarios_incoherentes";
     motivo = "sin_datos_bancarios_en_comprobante";
   }
   // Si los datos del comprobante coinciden queda "valido": la orden se crea "pendiente_revision"
