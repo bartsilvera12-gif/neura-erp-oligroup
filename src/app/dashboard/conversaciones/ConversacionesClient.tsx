@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { PushActivarButton } from "./PushActivarButton";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { fetchWithSupabaseSession } from "@/lib/api/fetch-with-supabase-session";
@@ -1431,6 +1432,16 @@ export function ConversacionesClient({
     el.scrollTop = el.scrollHeight;
   }, [messages, selectedId]);
 
+  const handleSelectRef = useRef<((id: string) => Promise<void>) | null>(null);
+  const deepLinkChatRef = useRef<string | null>(searchParams?.get("chat")?.trim() || null);
+  const conversationsLoadedCount = conversations.length;
+  useEffect(() => {
+    const id = deepLinkChatRef.current;
+    if (!id || conversationsLoadedCount === 0) return;
+    deepLinkChatRef.current = null;
+    void handleSelectRef.current?.(id);
+  }, [conversationsLoadedCount]);
+
   const handleSelect = useCallback(
     async (id: string) => {
       stickBottomRef.current = true;
@@ -1464,6 +1475,7 @@ export function ConversacionesClient({
     },
     [loadMessages, conversations]
   );
+  handleSelectRef.current = handleSelect;
 
   async function handleSendFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -2370,6 +2382,7 @@ export function ConversacionesClient({
             ) : null}
           </p>
         </div>
+        {mode === "inbox" ? <PushActivarButton /> : null}
         {mode === "inbox" && opPresenceLoaded && !opInQueues ? (
           initialCabeceraInsignia === "admin" ? (
             <div className="flex flex-col items-end gap-1 shrink-0 max-w-[20rem] text-right">

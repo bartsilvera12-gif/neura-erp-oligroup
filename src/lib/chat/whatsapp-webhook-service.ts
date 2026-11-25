@@ -4,6 +4,7 @@ import {
 } from "@/lib/chat/channel-provision";
 import { createFlowEngine } from "@/lib/chat/flow-engine-service";
 import { flowTrace } from "@/lib/chat/flow-trace-log";
+import { notifyAsesorRequested } from "@/lib/push/notify-asesor";
 import { persistInboundChatMessageAndBump, persistInboundEarlyViaPg } from "@/lib/chat/incoming-message-service";
 import { isSingleClientMode } from "@/lib/instance/single-client";
 import { assignConversation } from "@/lib/chat/assign-conversation-service";
@@ -1666,6 +1667,12 @@ export async function processInboundWebhookValue(
             trigger: message_type === "text" ? "text_keyword" : "interactive_button",
             preview: preview.slice(0, 200),
           },
+        });
+        await notifyAsesorRequested({
+          empresaId,
+          conversationId,
+          origen: message_type === "text" ? "palabra_clave" : "boton_asesor",
+          flowSessionId: sid,
         });
 
         const handoffText =

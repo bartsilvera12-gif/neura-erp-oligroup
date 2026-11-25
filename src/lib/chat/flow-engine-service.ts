@@ -1,4 +1,5 @@
 import { downloadMetaMediaBytes } from "@/lib/chat/meta-media-download";
+import { notifyAsesorRequested } from "@/lib/push/notify-asesor";
 import { flowTrace, summarizeFlowDataForTrace } from "@/lib/chat/flow-trace-log";
 import {
   COMPROBANTE_BUTTON_IDS,
@@ -1914,6 +1915,12 @@ export function createFlowEngine(ctx: FlowEngineContext) {
             updated_at: new Date().toISOString(),
           })
           .eq("id", state.id);
+        await notifyAsesorRequested({
+          empresaId: state.empresa_id,
+          conversationId: state.id,
+          origen: "nodo_humano",
+          flowSessionId: state.active_flow_session_id,
+        });
       }
 
       await insertFlowEvent({
@@ -2161,6 +2168,12 @@ export function createFlowEngine(ctx: FlowEngineContext) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", state.id);
+      await notifyAsesorRequested({
+        empresaId: state.empresa_id,
+        conversationId: state.id,
+        origen: "nodo_humano",
+        flowSessionId: state.active_flow_session_id,
+      });
     }
 
     await insertFlowEvent({
@@ -2295,6 +2308,12 @@ export function createFlowEngine(ctx: FlowEngineContext) {
         eventType: "comprobante_validation_asesor",
         metaButtonId: params.metaButtonId,
         payload: { raw: params.rawPayload, message_template: cvMsgs.revision_manual },
+      });
+      await notifyAsesorRequested({
+        empresaId: state.empresa_id,
+        conversationId: state.id,
+        origen: "comprobante",
+        flowSessionId: state.active_flow_session_id,
       });
       return { ok: true, status: "comprobante_asesor_handoff" };
     }
@@ -4167,6 +4186,12 @@ export function createFlowEngine(ctx: FlowEngineContext) {
             updated_at: new Date().toISOString(),
           })
           .eq("id", state.id);
+        await notifyAsesorRequested({
+          empresaId: state.empresa_id,
+          conversationId: state.id,
+          origen: "pipeline",
+          flowSessionId: state.active_flow_session_id,
+        });
       }
       if (pipeline.sendInteractive && sendCtxVal.provider === "meta") {
         const ib = await sendWhatsAppInteractiveButtons({
