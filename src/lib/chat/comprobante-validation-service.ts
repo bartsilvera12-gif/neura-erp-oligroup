@@ -709,7 +709,9 @@ export async function runComprobanteValidationPipeline(ctx: PipelineCtx): Promis
     estado = "datos_bancarios_incoherentes";
     motivo = bankFlowResult.motivoDetalle ?? "datos_bancarios:discrepancia";
   } else if (sospecha) {
-    estado = "revision_manual";
+    // Casi sin texto legible (una foto cualquiera, no un comprobante): se RECHAZA con
+    // "enviá una foto más clara o hablá con un asesor" en vez de dejarla en revisión (#688).
+    estado = "ocr_error";
     motivo = "ocr_texto_corto_sospecha";
   } else if (
     settings.validar_datos_bancarios_ocr &&
@@ -832,7 +834,7 @@ export async function runComprobanteValidationPipeline(ctx: PipelineCtx): Promis
     };
   }
 
-  if (estado === "ocr_error" && missingWorst === "bloquear") {
+  if (estado === "ocr_error") {
     return {
       kind: "resolved",
       validationId,

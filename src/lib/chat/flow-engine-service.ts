@@ -4330,6 +4330,9 @@ export function createFlowEngine(ctx: FlowEngineContext) {
       });
 
       const notifySorteoImageErr = async (text: string) => {
+        // La validación del comprobante ya mandó este mismo texto (ej. "Recibimos tu comprobante…"):
+        // repetirlo le llega dos veces al cliente (#688).
+        if (pipeline.kind === "resolved" && pipeline.sendText?.trim() === text.trim()) return;
         const send = await flowSendText(sendCtxOrd, text);
         if (send.ok) {
           await persistOutgoingMessage({

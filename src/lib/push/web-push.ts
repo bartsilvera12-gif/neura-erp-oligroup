@@ -53,7 +53,11 @@ export async function loadVapidConfig(supabase: {
 }): Promise<VapidConfig | null> {
   const envPub = process.env.VAPID_PUBLIC_KEY?.trim();
   const envPriv = process.env.VAPID_PRIVATE_KEY?.trim();
-  if (envPub && envPriv) return { pub: envPub, priv: envPriv, subject: VAPID_SUBJECT() };
+  if (envPub && envPriv) {
+    // También al caché: sendWebPush firma con lo que quedó cargado acá.
+    vapidCache = { pub: envPub, priv: envPriv, subject: VAPID_SUBJECT() };
+    return vapidCache;
+  }
   if (vapidCache) return vapidCache;
   try {
     const leer = async () => {
