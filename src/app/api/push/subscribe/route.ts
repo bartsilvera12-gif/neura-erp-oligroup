@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getChatServiceClientForEmpresa } from "@/app/api/chat/_chat-service-client";
 import { getAuthWithRol } from "@/lib/middleware/auth";
 import { esRolAdminEmpresa } from "@/lib/modulos/resolve-effective-modules";
-import { getVapidPublicKey } from "@/lib/push/web-push";
+import { loadVapidConfig } from "@/lib/push/web-push";
 
 export const runtime = "nodejs";
 
@@ -10,7 +10,8 @@ export const runtime = "nodejs";
 export async function GET(request: NextRequest) {
   const auth = await getAuthWithRol(request);
   if (!auth?.empresa_id) return NextResponse.json({ ok: false, error: "No autenticado" }, { status: 401 });
-  const publicKey = getVapidPublicKey();
+  const supabase = await getChatServiceClientForEmpresa(auth.empresa_id);
+  const publicKey = (await loadVapidConfig(supabase))?.pub ?? null;
   return NextResponse.json({
     ok: true,
     configured: !!publicKey,

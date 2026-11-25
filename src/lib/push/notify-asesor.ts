@@ -1,6 +1,6 @@
 import { getChatServiceClientForEmpresa } from "@/lib/supabase/chat-service-role-empresa";
 import { esRolAdminEmpresa } from "@/lib/modulos/resolve-effective-modules";
-import { isWebPushConfigured, sendWebPush } from "@/lib/push/web-push";
+import { loadVapidConfig, sendWebPush } from "@/lib/push/web-push";
 import {
   SORTEO_COMPROBANTE_MOTIVO_VALIDACION_FIELD,
 } from "@/lib/chat/comprobante-validation-types";
@@ -93,9 +93,9 @@ export async function notifyAsesorRequested(params: {
   flowSessionId?: string | null;
 }): Promise<void> {
   try {
-    if (!isWebPushConfigured()) return;
     const { empresaId, conversationId, origen } = params;
     const supabase = await getChatServiceClientForEmpresa(empresaId);
+    if (!(await loadVapidConfig(supabase))) return;
 
     const subs = await loadAdminSubscriptions(supabase, empresaId);
     if (subs.length === 0) return;
@@ -172,6 +172,7 @@ export async function notifyAsesorRequested(params: {
 /** Notificación de prueba al propio usuario (todos sus dispositivos). */
 export async function sendTestPushToUser(empresaId: string, authUserId: string): Promise<{ sent: number; total: number }> {
   const supabase = await getChatServiceClientForEmpresa(empresaId);
+  if (!(await loadVapidConfig(supabase))) return { sent: 0, total: 0 };
   const { data } = await supabase
     .from("push_suscripciones")
     .select("id, usuario_id, endpoint, p256dh, auth")
