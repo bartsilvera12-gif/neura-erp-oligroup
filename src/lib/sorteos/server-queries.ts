@@ -27,6 +27,7 @@ type NormalizedListParams = {
   sorteoId: string | null;
   q: string | null;
   estadoPago: SorteoEntradaEstadoPago | null;
+  impresion: "pendientes" | "impresas" | null;
 };
 
 const listCache = new Map<
@@ -47,7 +48,9 @@ function normalizeListParams(raw?: SorteoEntradasListParams): NormalizedListPara
   const sorteoId = raw?.sorteoId?.trim() || null;
   const q = raw?.q?.trim() || null;
   const estadoPago = raw?.estadoPago ?? null;
-  return { page, limit, offset, sorteoId, q, estadoPago };
+  const impresion =
+    raw?.impresion === "pendientes" || raw?.impresion === "impresas" ? raw.impresion : null;
+  return { page, limit, offset, sorteoId, q, estadoPago, impresion };
 }
 
 function cacheKeyEntradas(empresaId: string, schema: string, p: NormalizedListParams) {
@@ -55,7 +58,7 @@ function cacheKeyEntradas(empresaId: string, schema: string, p: NormalizedListPa
 }
 
 function cacheKeyCupones(empresaId: string, schema: string, p: NormalizedListParams) {
-  return `cup:${schema}:${empresaId}:${p.page}:${p.limit}:${p.sorteoId ?? ""}:${p.q ?? ""}:${p.estadoPago ?? ""}`;
+  return `cup:${schema}:${empresaId}:${p.page}:${p.limit}:${p.sorteoId ?? ""}:${p.q ?? ""}:${p.estadoPago ?? ""}:${p.impresion ?? ""}`;
 }
 
 function normalizeRowTimestamps<T extends Record<string, unknown>>(row: T): T {
@@ -81,6 +84,8 @@ export type SorteoEntradasListParams = {
   sorteoId?: string | null;
   q?: string | null;
   estadoPago?: SorteoEntradaEstadoPago | null;
+  /** Solo cupones: filtra por marca de impresión (cupones_impresos_at). */
+  impresion?: "pendientes" | "impresas" | null;
 };
 
 export type SorteoEntradasServerResult = {
@@ -189,6 +194,8 @@ function buildEntradaWhereParts(
     params.push(p.estadoPago);
     i++;
   }
+  if (p.impresion === "pendientes") conds.push(`${a}cupones_impresos_at IS NULL`);
+  else if (p.impresion === "impresas") conds.push(`${a}cupones_impresos_at IS NOT NULL`);
 
   return { sql: conds.join(" AND "), params, nextIdx: i };
 }
@@ -545,6 +552,8 @@ async function fetchSorteoCuponesOrdenesPostgrest(
     .select("*, sorteo_cupones!inner(entrada_id)", { count: "exact" })
     .eq("empresa_id", empresaId);
 
+  if (listParams.impresion === "pendientes") qb = qb.is("cupones_impresos_at", null);
+  else if (listParams.impresion === "impresas") qb = qb.not("cupones_impresos_at", "is", null);
   if (listParams.sorteoId) qb = qb.eq("sorteo_id", listParams.sorteoId);
   if (listParams.estadoPago) qb = qb.eq("estado_pago", listParams.estadoPago);
   if (listParams.q && listParams.q.length > 0) {

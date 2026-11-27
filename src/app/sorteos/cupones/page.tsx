@@ -35,6 +35,7 @@ function buildQuery(
     q: pickStr(sp, "q"),
     sorteo_id: pickStr(sp, "sorteo_id"),
     estado: pickStr(sp, "estado"),
+    impresion: pickStr(sp, "impresion"),
   };
   for (const [k, v] of Object.entries({ ...base, ...patch })) {
     if (v && v.length > 0) p.set(k, v);
@@ -59,6 +60,10 @@ export default async function SorteoCuponesPage({
       ? estadoRaw
       : undefined;
 
+  const impresionRaw = pickStr(sp, "impresion")?.trim();
+  const impresion: "pendientes" | "impresas" | null =
+    impresionRaw === "pendientes" || impresionRaw === "impresas" ? impresionRaw : null;
+
   // Selector de sorteo: por defecto el sorteo actual (activo más reciente) para no
   // escanear todo el histórico. `all` = ver todos (opt-in explícito).
   const { sorteos } = await fetchSorteosListServer();
@@ -73,6 +78,7 @@ export default async function SorteoCuponesPage({
     q: q ?? null,
     sorteoId: selectedSorteoId,
     estadoPago: estadoPago ?? null,
+    impresion,
   };
 
   const {
@@ -188,6 +194,18 @@ export default async function SorteoCuponesPage({
             </select>
           </label>
           <SorteoCuponesEstadoPagoFilter />
+          <label className="flex flex-col gap-1 text-xs text-slate-600">
+            Impresión
+            <select
+              name="impresion"
+              defaultValue={impresion ?? ""}
+              className="border border-slate-300 rounded px-2 py-1.5 text-sm min-w-[180px]"
+            >
+              <option value="">Todas</option>
+              <option value="pendientes">Pendientes de imprimir</option>
+              <option value="impresas">Ya impresas</option>
+            </select>
+          </label>
           <button
             type="submit"
             className="rounded-xl bg-[#4FAEB2] px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-[#4FAEB2]/25 transition-colors hover:bg-[#3F8E91]"
@@ -242,6 +260,7 @@ export default async function SorteoCuponesPage({
         rows={rows}
         selectedSorteoId={selectedSorteoId}
         estadoParam={estadoPago}
+        filtraImpresion={impresion !== null}
         qParam={q}
         totalCount={total_count}
         esAdmin={esAdmin}

@@ -57,7 +57,10 @@ export default function SorteoCuponesBatchPrintClient({
   qParam,
   totalCount,
   esAdmin = false,
+  filtraImpresion = false,
 }: {
+  /** Hay un filtro de impresión (pendientes/impresas) activo. */
+  filtraImpresion?: boolean;
   rows: SorteoCuponOrdenRow[];
   /** Sorteo del filtro actual; null cuando se eligió "Todos los sorteos". */
   selectedSorteoId: string | null;
@@ -172,6 +175,12 @@ export default function SorteoCuponesBatchPrintClient({
   }
 
   function handleImprimirTodosFiltrados() {
+    if (filtraImpresion) {
+      window.alert(
+        "Con el filtro de Impresión activo, usá «Seleccionar todos» de la tabla e «Imprimir seleccionados» (así no se reimprimen boletas ya impresas)."
+      );
+      return;
+    }
     if (!selectedSorteoId) {
       window.alert("Elegí un sorteo específico en el filtro para imprimir todos los resultados.");
       return;
@@ -255,7 +264,8 @@ export default function SorteoCuponesBatchPrintClient({
         </div>
         <p className="mt-2 text-xs text-slate-500">
           La impresión por tandas abre la pantalla de impresión en una pestaña nueva. No modifica datos
-          ni marca cupones como impresos. El botón «Imprimir» de cada fila sigue funcionando igual.
+          ni marca cupones como impresos (la marca «Impreso» se registra al confirmar la impresión de cada
+          orden). Usá el filtro «Impresión → Pendientes de imprimir» para continuar donde quedaste. El botón «Imprimir» de cada fila sigue funcionando igual.
           {!selectedSorteoId
             ? " Para rango / todos, elegí un sorteo específico en el filtro de arriba."
             : ""}
