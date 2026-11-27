@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import type { SorteoCuponOrdenRow } from "@/lib/sorteos/types";
 import SorteoCuponesPagoCell from "@/components/sorteos/SorteoCuponesPagoCell";
@@ -75,6 +76,8 @@ export default function SorteoCuponesBatchPrintClient({
   const [ordenHasta, setOrdenHasta] = useState("");
   const [ventaImprimir, setVentaImprimir] = useState<VentaImprimir | null>(null);
   const [busyBoletaId, setBusyBoletaId] = useState<string | null>(null);
+  const [confirmandoLote, setConfirmandoLote] = useState(false);
+  const router = useRouter();
 
   /** Abre la boleta ya generada de la orden (sin crear venta ni números nuevos). */
   async function imprimirBoleta(entradaId: string) {
@@ -200,6 +203,48 @@ export default function SorteoCuponesBatchPrintClient({
     );
   }
 
+  /** Marca como impresas las órdenes seleccionadas (usa el mismo endpoint que la confirmación individual). */
+  async function handleConfirmarLote() {
+    const pendientes = rows.filter((r) => selected.has(r.entrada_id) && !r.cupones_impresos_at);
+    if (pendientes.length === 0) {
+      window.alert("Las órdenes seleccionadas ya figuran como impresas.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `¿Confirmás que se imprimieron ${pendientes.length} orden(es) pendientes? Quedarán marcadas como «Impreso».`
+      )
+    ) {
+      return;
+    }
+    setConfirmandoLote(true);
+    const fallidas: number[] = [];
+    try {
+      for (const r of pendientes) {
+        try {
+          const res = await fetchWithSupabaseSession(
+            `/api/sorteos/entradas/${encodeURIComponent(r.entrada_id)}/confirmar-impresion`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ sorteo_id: r.sorteo_id }),
+            }
+          );
+          if (!res.ok) fallidas.push(r.numero_orden);
+        } catch {
+          fallidas.push(r.numero_orden);
+        }
+      }
+    } finally {
+      setConfirmandoLote(false);
+    }
+    if (fallidas.length > 0) {
+      window.alert(`No se pudo confirmar la(s) orden(es): ${fallidas.join(", ")}.`);
+    }
+    setSelected(new Set());
+    router.refresh();
+  }
+
   const selectedCount = selected.size;
 
   return (
@@ -214,6 +259,15 @@ export default function SorteoCuponesBatchPrintClient({
             className="rounded-xl bg-[#4FAEB2] px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-[#4FAEB2]/25 transition-colors hover:bg-[#3F8E91] disabled:opacity-50 disabled:pointer-events-none"
           >
             Imprimir seleccionados ({selectedCount})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleConfirmarLote()}
+            disabled={selectedCount === 0 || confirmandoLote}
+            className="rounded-xl border border-emerald-600/50 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-800 shadow-sm transition-colors hover:bg-emerald-50 disabled:opacity-50 disabled:pointer-events-none"
+          >
+            {confirmandoLote ? "Confirmando…" : `Confirmar impresión de seleccionados (${selectedCount})`}
           </button>
 
           <div className="flex items-end gap-2 border-l border-slate-200 pl-3">
@@ -263,9 +317,10 @@ export default function SorteoCuponesBatchPrintClient({
           </button>
         </div>
         <p className="mt-2 text-xs text-slate-500">
-          La impresión por tandas abre la pantalla de impresión en una pestaña nueva. No modifica datos
-          ni marca cupones como impresos (la marca «Impreso» se registra al confirmar la impresión de cada
-          orden). Usá el filtro «Impresión → Pendientes de imprimir» para continuar donde quedaste. El botón «Imprimir» de cada fila sigue funcionando igual.
+          La impresión por tandas abre la pantalla de impresión en una pestaña nueva y no marca nada
+          sola. Cuando termines de imprimir, dejá seleccionadas las órdenes que sí salieron y tocá
+          «Confirmar impresión de seleccionados» para marcarlas como «Impreso». Usá el filtro «Impresión →
+          Pendientes de imprimir» para continuar donde quedaste.
           {!selectedSorteoId
             ? " Para rango / todos, elegí un sorteo específico en el filtro de arriba."
             : ""}
