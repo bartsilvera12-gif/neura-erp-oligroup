@@ -21,6 +21,7 @@ import {
 } from "@/lib/chat/bot-wake-keywords";
 import {
   approveComprobanteAndCloseSorteoPurchase,
+  getManualApprovalContext,
   type ManualSorteoApprovalResult,
 } from "@/lib/chat/sorteo-manual-approval-service";
 import { requireEmpresaTenantServiceRole } from "@/lib/chat/empresa-tenant-service-role";
@@ -2370,7 +2371,10 @@ export async function fetchComprobanteValidacionesForConversation(
 export async function approveComprobanteValidacion(
   validacionId: string,
   approvalNote?: string | null,
-  options?: { forceClosePurchase?: boolean }
+  options?: {
+    forceClosePurchase?: boolean;
+    selectedOption?: { cantidad: number; monto: number | null; label?: string | null } | null;
+  }
 ): Promise<ManualSorteoApprovalResult> {
   const { supabase, empresa_id, usuario_id, dataSchema } = await requireEmpresaTenantServiceRole();
   const id = validacionId.trim();
@@ -2383,6 +2387,7 @@ export async function approveComprobanteValidacion(
     validacionId: id,
     approvalNote,
     forceClosePurchase: options?.forceClosePurchase === true,
+    selectedOption: options?.selectedOption ?? null,
   });
   if (!res.ok && isLikelyUnexposedTenantChatSchema(dataSchema) && isInvalidPostgrestSchemaError(res.message)) {
     return {
@@ -2392,6 +2397,22 @@ export async function approveComprobanteValidacion(
     };
   }
   return res;
+}
+
+export async function fetchComprobanteApprovalContext(validacionId: string): Promise<
+  | {
+      ok: true;
+      chatCantidad: number | null;
+      chatMonto: number | null;
+      chatLabel: string;
+      ocrMonto: number | null;
+    }
+  | { ok: false; message: string }
+> {
+  const { supabase, empresa_id } = await requireEmpresaTenantServiceRole();
+  const id = validacionId.trim();
+  if (!id) return { ok: false, message: "ID de validación inválido" };
+  return getManualApprovalContext({ supabase, empresaId: empresa_id, validacionId: id });
 }
 
 export async function deleteChatChannel(id: string): Promise<void> {

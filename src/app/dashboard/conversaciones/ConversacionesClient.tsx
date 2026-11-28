@@ -19,6 +19,7 @@ import {
   fetchChatChannels,
   fetchChatConversations,
   fetchComprobanteValidacionesForConversation,
+  fetchComprobanteApprovalContext,
   hasEmpresaActiveChatFlows,
   markConversationRead,
   releaseConversationToBot,
@@ -417,6 +418,62 @@ export function ConversacionesClient({
   const [compLoading, setCompLoading] = useState(false);
   const [compActionId, setCompActionId] = useState<string | null>(null);
   const [compApproveConfirmId, setCompApproveConfirmId] = useState<string | null>(null);
+  const [compApproveCtx, setCompApproveCtx] = useState<{
+    chatCantidad: number | null;
+    chatMonto: number | null;
+    chatLabel: string;
+    ocrMonto: number | null;
+  } | null>(null);
+  const [compApprovePromos, setCompApprovePromos] = useState<
+    Array<{ id: string; label: string; cantidad: number; monto: number | null }>
+  >([]);
+  const [compApproveLoading, setCompApproveLoading] = useState(false);
+  const [compApprovePromoId, setCompApprovePromoId] = useState("");
+
+  useEffect(() => {
+    if (!compApproveConfirmId) {
+      setCompApproveCtx(null);
+      setCompApprovePromos([]);
+      setCompApprovePromoId("");
+      return;
+    }
+    let cancelled = false;
+    setCompApproveLoading(true);
+    void (async () => {
+      try {
+        const [ctxRes, promoRes] = await Promise.all([
+          fetchComprobanteApprovalContext(compApproveConfirmId),
+          fetchWithSupabaseSession("/api/sorteos/manual-promos", { method: "GET" })
+            .then((r) => r.json())
+            .catch(() => null),
+        ]);
+        if (cancelled) return;
+        const promos = (
+          promoRes?.success && Array.isArray(promoRes.data) ? promoRes.data : []
+        ) as Array<{ id: string; label: string; cantidad: number; monto: number | null }>;
+        setCompApprovePromos(promos);
+        if (ctxRes.ok) {
+          setCompApproveCtx(ctxRes);
+          const byOcr =
+            ctxRes.ocrMonto != null ? promos.find((p) => p.monto === ctxRes.ocrMonto) : undefined;
+          const byChat = promos.find(
+            (p) => p.cantidad === ctxRes.chatCantidad && (p.monto ?? null) === (ctxRes.chatMonto ?? null)
+          );
+          // Si el monto leído coincide con el combo del chat queda ese; si no, el que coincide con el comprobante.
+          const ocrMatchesChat = byChat && ctxRes.ocrMonto != null && byChat.monto === ctxRes.ocrMonto;
+          setCompApprovePromoId((ocrMatchesChat ? byChat : byOcr ?? byChat)?.id ?? "");
+        } else {
+          setCompApproveCtx(null);
+          setCompApprovePromoId("");
+        }
+      } finally {
+        if (!cancelled) setCompApproveLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [compApproveConfirmId]);
   const [compApprovalInfo, setCompApprovalInfo] = useState<string | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [opsQueues, setOpsQueues] = useState<ChatQueueListRow[]>([]);
@@ -1979,6 +2036,55 @@ export function ConversacionesClient({
               ¿Confirmás aprobar este comprobante y cerrar la compra? Esto generará cupones y enviará el resumen al
               cliente por WhatsApp (y el ticket PNG si el sorteo lo tiene configurado).
             </p>
+            {compApproveLoading ? (
+              <p className="mt-3 text-xs text-slate-500">Cargando datos del comprobante…</p>
+            ) : (
+              <div className="mt-3 space-y-1.5 text-xs text-slate-700">
+                <p>
+                  Combo elegido por el cliente:{" "}
+                  <span className="font-semibold">
+                    {compApproveCtx?.chatCantidad != null
+                      ? `${compApproveCtx.chatCantidad} boleta(s)${
+                          compApproveCtx.chatMonto != null
+                            ? ` · Gs. ${compApproveCtx.chatMonto.toLocaleString("es-PY")}`
+                            : ""
+                        }`
+                      : "sin datos"}
+                  </span>
+                </p>
+                <p>
+                  Comprobante:{" "}
+                  <span className="font-semibold">
+                    {compApproveCtx?.ocrMonto != null
+                      ? `Gs. ${compApproveCtx.ocrMonto.toLocaleString("es-PY")}`
+                      : "no se pudo leer"}
+                  </span>
+                </p>
+                {compApprovePromos.length > 0 ? (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">
+                      Aprobar con el combo
+                    </label>
+                    <select
+                      className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+                      value={compApprovePromoId}
+                      onChange={(e) => setCompApprovePromoId(e.target.value)}
+                    >
+                      <option value="">Combo del chat (sin cambios)</option>
+                      {compApprovePromos.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.cantidad} x {p.monto != null ? p.monto.toLocaleString("es-PY") : "precio de lista"}
+                          {p.label ? ` — ${p.label}` : ""}
+                          {compApproveCtx?.ocrMonto != null && p.monto === compApproveCtx.ocrMonto
+                            ? " (coincide con el comprobante)"
+                            : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+              </div>
+            )}
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
@@ -2001,7 +2107,20 @@ export function ConversacionesClient({
                     setSendError(null);
                     setCompApprovalInfo(null);
                     try {
-                      const res = await approveComprobanteValidacion(vid);
+                      const chosen = compApprovePromos.find((p) => p.id === compApprovePromoId);
+                      const res = await approveComprobanteValidacion(
+                        vid,
+                        null,
+                        chosen
+                          ? {
+                              selectedOption: {
+                                cantidad: chosen.cantidad,
+                                monto: chosen.monto,
+                                label: chosen.label,
+                              },
+                            }
+                          : undefined
+                      );
                       if (!res.ok) {
                         setSendError(res.message);
                       } else if (res.mode === "pending_participant_data") {

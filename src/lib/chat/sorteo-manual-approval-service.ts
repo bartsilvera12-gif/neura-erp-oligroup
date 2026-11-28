@@ -3,6 +3,9 @@ import "server-only";
 import {
   buildChatFlowDataUpsertsForSorteoOrder,
   finalizeSorteoOrderFromConfirmedFlowData,
+  parseSorteoParticipantFromFlowData,
+  parseSorteoPricingFromFlowData,
+  prepareFlowDataForSorteoOrder,
 } from "@/lib/sorteos/sorteo-order-from-chat";
 import {
   MOTIVO_VALIDACION_ASESOR_PENDIENTE_DATOS,
@@ -77,6 +80,134 @@ function logManual(tag: string, payload: Record<string, unknown>) {
   console.info(`[sorteo-manual-approval][${tag}]`, payload);
 }
 
+/** Combo elegido por el operador al aprobar a mano (reemplaza al elegido por el cliente en el chat). */
+export type ManualApprovalSelectedOption = {
+  cantidad: number;
+  /** Monto total del combo en Gs.; null = precio de lista. */
+  monto: number | null;
+  label?: string | null;
+};
+
+function describeCombo(cantidad: number | null, monto: number | null): string {
+  const c = cantidad != null ? `${cantidad} boleta(s)` : "sin cantidad";
+  return monto != null ? `${c} por Gs. ${monto}` : c;
+}
+
+function applySelectedOptionToFlowData(
+  fd: Record<string, string>,
+  opt: ManualApprovalSelectedOption
+): Record<string, string> {
+  const out = { ...fd };
+  const q = String(Math.trunc(opt.cantidad));
+  for (const k of [
+    "sorteo_snap_cantidad",
+    "sorteo_cantidad_opcion",
+    "cantidad_boletos",
+    "cantidad_boletas",
+    "cantidad_numeros",
+    "cantidad_entradas",
+    "cantidad",
+    "boletos",
+    "boletas",
+    "numeros",
+    "entradas",
+    "qty",
+    "quantity",
+  ]) {
+    if (k in out || k === "sorteo_snap_cantidad" || k === "sorteo_cantidad_opcion" || k === "cantidad_boletos" || k === "cantidad") {
+      out[k] = q;
+    }
+  }
+  const m = opt.monto != null && opt.monto > 0 ? String(Math.round(opt.monto)) : "";
+  for (const k of ["sorteo_snap_monto", "sorteo_monto_opcion", "monto_compra", "monto_promocional", "monto"]) {
+    out[k] = m;
+  }
+  out["precio_fuente"] = m ? "promo" : "";
+  const label = (opt.label ?? "").trim() || `${q} ${q === "1" ? "boleta" : "boletas"}`;
+  for (const k of [
+    "sorteo_snap_opcion_label",
+    "opcion_label",
+    "option_label",
+    "sorteo_snap_resumen",
+    "resumen_compra",
+    "producto",
+    "combo",
+    "opcion",
+    "descripcion",
+  ]) {
+    if (k in out || k.startsWith("sorteo_snap")) out[k] = label;
+  }
+  return out;
+}
+
+function readChatCombo(fd: Record<string, string>): { cantidad: number | null; monto: number | null; label: string } {
+  const prepared = prepareFlowDataForSorteoOrder(fd);
+  const p = parseSorteoParticipantFromFlowData({ ...prepared, nombre: prepared["nombre"] || "x" });
+  const pricing = parseSorteoPricingFromFlowData(prepared);
+  return {
+    cantidad: p?.cantidad_boletos ?? null,
+    monto: pricing.montoCompra,
+    label: (prepared["sorteo_snap_opcion_label"] || prepared["opcion_label"] || "").trim(),
+  };
+}
+
+/** Datos para el paso de confirmación: combo del chat y monto leído del comprobante. */
+export async function getManualApprovalContext(input: {
+  supabase: AppSupabaseClient;
+  empresaId: string;
+  validacionId: string;
+}): Promise<
+  | {
+      ok: true;
+      chatCantidad: number | null;
+      chatMonto: number | null;
+      chatLabel: string;
+      ocrMonto: number | null;
+    }
+  | { ok: false; message: string }
+> {
+  const dataSchema = await fetchDataSchemaForEmpresaId(input.empresaId);
+  const pool = getChatPostgresPool();
+  const useShim = Boolean(pool && isLikelyUnexposedTenantChatSchema(dataSchema));
+  const catalogSr = createServiceRoleClient();
+  const sb: AppSupabaseClient = useShim
+    ? (createTenantPgChatSupabaseShim({
+        pool: pool!,
+        schema: dataSchema,
+        storageDelegate: catalogSr as SupabaseAdmin,
+        rpcDelegate: catalogSr,
+      }) as unknown as AppSupabaseClient)
+    : input.supabase;
+  const { data, error } = await sb
+    .from("chat_comprobante_validaciones")
+    .select("conversation_id, flow_session_id, flow_code, monto_validacion_ocr_gs")
+    .eq("id", input.validacionId.trim())
+    .eq("empresa_id", input.empresaId)
+    .maybeSingle();
+  if (error || !data) return { ok: false, message: error?.message ?? "Validación no encontrada" };
+  const r = data as {
+    conversation_id: string;
+    flow_session_id: string;
+    flow_code: string;
+    monto_validacion_ocr_gs: number | string | null;
+  };
+  const fd = await loadHydratedFlowSessionData(sb, {
+    empresaId: input.empresaId,
+    conversationId: r.conversation_id,
+    flowCode: String(r.flow_code ?? "").trim(),
+    flowSessionId: String(r.flow_session_id ?? "").trim(),
+  });
+  const chat = readChatCombo(fd);
+  const ocr = r.monto_validacion_ocr_gs != null ? Number(r.monto_validacion_ocr_gs) : null;
+  return {
+    ok: true,
+    chatCantidad: chat.cantidad,
+    chatMonto: chat.monto,
+    chatLabel: chat.label,
+    ocrMonto: ocr != null && Number.isFinite(ocr) && ocr > 0 ? ocr : null,
+  };
+}
+
 export async function approveComprobanteAndCloseSorteoPurchase(input: {
   supabase: AppSupabaseClient;
   empresaId: string;
@@ -85,9 +216,11 @@ export async function approveComprobanteAndCloseSorteoPurchase(input: {
   approvalNote?: string | null;
   /** Solo para tenants con close_purchase_only_on_final_confirmation: fuerza cierre + entrada como inbox_manual_close. */
   forceClosePurchase?: boolean;
+  /** Combo elegido por el operador; si falta se usa el del chat. */
+  selectedOption?: ManualApprovalSelectedOption | null;
 }): Promise<ManualSorteoApprovalResult> {
   const vid = input.validacionId.trim();
-  const note = (input.approvalNote ?? "").trim().slice(0, 2000);
+  let note = (input.approvalNote ?? "").trim().slice(0, 2000);
   const dataSchema = await fetchDataSchemaForEmpresaId(input.empresaId);
 
   /**
@@ -233,6 +366,42 @@ export async function approveComprobanteAndCloseSorteoPurchase(input: {
     flowCode,
     flowSessionId,
   });
+
+  const selOpt = input.selectedOption;
+  if (selOpt && Number.isFinite(selOpt.cantidad) && selOpt.cantidad >= 1 && selOpt.cantidad <= 1000) {
+    const orig = readChatCombo(hydFd);
+    hydFd = applySelectedOptionToFlowData(hydFd, selOpt);
+    const audit = `[Aprobado por usuario ${input.usuarioId}. Combo original: ${describeCombo(orig.cantidad, orig.monto)}. Combo aprobado: ${describeCombo(Math.trunc(selOpt.cantidad), selOpt.monto)}]`;
+    note = `${note ? note + " " : ""}${audit}`.slice(0, 2000);
+    const keys = [
+      "sorteo_snap_cantidad",
+      "sorteo_cantidad_opcion",
+      "cantidad_boletos",
+      "cantidad",
+      "sorteo_snap_monto",
+      "sorteo_monto_opcion",
+      "monto_compra",
+      "monto_promocional",
+      "monto",
+      "precio_fuente",
+      "sorteo_snap_opcion_label",
+      "opcion_label",
+      "option_label",
+      "sorteo_snap_resumen",
+      "resumen_compra",
+    ];
+    await tenantSb.from("chat_flow_data").upsert(
+      keys.map((k) => ({
+        empresa_id: input.empresaId,
+        conversation_id: row.conversation_id,
+        flow_code: flowCode,
+        flow_session_id: flowSessionId,
+        field_name: k,
+        field_value: hydFd[k] ?? "",
+      })),
+      { onConflict: "flow_session_id,field_name" }
+    );
+  }
 
   hydFd = {
     ...hydFd,
