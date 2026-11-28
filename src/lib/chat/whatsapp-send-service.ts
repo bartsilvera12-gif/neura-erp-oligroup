@@ -12,6 +12,33 @@ export const WA_META_LIST_ROW_TITLE_MAX = 24;
 export const WA_META_LIST_ROW_DESCRIPTION_MAX = 72;
 /** Texto del botón que abre la lista (Meta). */
 export const WA_META_LIST_MENU_BUTTON_MAX = 20;
+/**
+ * Acorta un título de botón al máximo de Meta sin cortar números (ej. "15 boletas por 100000"
+ * quedaba "15 boletas por 10000", un precio distinto). Primero compacta palabras, y solo si
+ * aun así no entra corta por palabras completas.
+ */
+export function fitWhatsAppButtonTitle(raw: string, max = WA_META_REPLY_TITLE_MAX): string {
+  const full = raw.trim().replace(/\s+/g, " ");
+  if (full.length <= max) return full;
+  const steps: Array<(s: string) => string> = [
+    (s) => s.replace(/\s+por\s+/gi, " x "),
+    (s) => s.replace(/\bboletas?\b/gi, "bol."),
+    (s) => s.replace(/\s+x\s+/gi, "x"),
+    (s) => s.replace(/\s+/g, ""),
+  ];
+  let cur = full;
+  for (const step of steps) {
+    cur = step(cur);
+    if (cur.length <= max) return cur;
+  }
+  // Último recurso: cortar sin partir una palabra/número.
+  const cut = cur.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  const nextChar = cur.charAt(max);
+  if (nextChar && nextChar !== " " && lastSpace > 0) return cut.slice(0, lastSpace).trim();
+  return cut.trim();
+}
+
 export type SendWhatsAppTextParams = {
   toDigits: string;
   text: string;
@@ -126,7 +153,7 @@ export async function sendWhatsAppInteractiveButtons(
   }
   const buttons = params.buttons.slice(0, WA_META_REPLY_BUTTON_MAX).map((b) => ({
     type: "reply",
-    reply: { id: b.id, title: b.title.slice(0, WA_META_REPLY_TITLE_MAX) },
+    reply: { id: b.id, title: fitWhatsAppButtonTitle(b.title) },
   }));
 
   if (buttons.length === 0) {
